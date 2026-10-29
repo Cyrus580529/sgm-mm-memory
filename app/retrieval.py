@@ -160,7 +160,14 @@ def query_periods(query: str) -> list:
     ("last week", "3 days ago", ...) anchored on a stated "today is ..." date."""
     preds = []
     anchor, body = None, query
-    t = _TODAY_RE.search(query)
+    z = _ZH_TODAY.search(query)
+    if z and z.group(1):
+        try:
+            anchor = date(int(z.group(1)), int(z.group(2)), int(z.group(3)))
+            body = query[:z.start()] + " " + query[z.end():]
+        except ValueError:
+            anchor = None
+    t = None if anchor else _TODAY_RE.search(query)
     if t:
         tail = query[t.start(1):t.start(1) + 40]
         try:
@@ -208,6 +215,7 @@ def query_periods(query: str) -> list:
             lo = 21
         preds.append(lambda d, y=y, mo=mo, lo=lo, hi=hi: (y is None or d.year == y) and d.month == mo
                      and lo <= d.day <= hi)
+    zh_periods(body, anchor, preds, span)
     if anchor:
         q = body.lower()
         wk = anchor - timedelta(days=anchor.weekday())  # Monday of the anchor week
@@ -239,9 +247,77 @@ def query_periods(query: str) -> list:
     return preds
 
 
+_ZH_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+_ZH_DATE = re.compile(r"(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(?:(\d{1,2})\s*[日号]|(初|上旬|中旬|下旬|底|末))?")
+_ZH_YEAR = re.compile(r"(\d{4})\s*年(?!\s*\d{1,2}\s*月)")
+_ZH_AGO = re.compile(r"(\d+|[一二两三四五六七八九十])\s*(天|周|个星期|星期|个月|年)(?:以)?前")
+_ZH_TODAY = re.compile(r"今天是\s*(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]")
+
+
+def zh_periods(text: str, anchor: Optional[date], preds: list, span) -> None:
+    """Chinese date expressions: 2025年5月20日 / 7月2号 / 5月初 / 2024年 and, with an anchor date,
+    昨天 前天 上周 上个月 去年 N天前 ... (adds predicates in place)."""
+    if not re.search(r"[\u4e00-\u9fff]", text):
+        return
+    for m in _ZH_DATE.finditer(text):
+        mo = int(m.group(2))
+        if not 1 <= mo <= 12:
+            continue
+        if m.group(1):
+            y = int(m.group(1))
+        elif anchor:
+            y = anchor.year if mo <= anchor.month else anchor.year - 1
+        else:
+            y = None
+        lo, hi, part = 1, 31, m.group(4)
+        if m.group(3):
+            lo = hi = int(m.group(3))
+        elif part in ("初", "上旬"):
+            hi = 10
+        elif part == "中旬":
+            lo, hi = 11, 20
+        elif part in ("下旬", "底", "末"):
+            lo = 21
+        preds.append(lambda d, y=y, mo=mo, lo=lo, hi=hi: (y is None or d.year == y) and d.month == mo
+                     and lo <= d.day <= hi)
+    for m in _ZH_YEAR.finditer(text):
+        y = int(m.group(1))
+        preds.append(lambda d, y=y: d.year == y)
+    if not anchor:
+        return
+    wk = anchor - timedelta(days=anchor.weekday())
+    rel = {"昨天": (1, 1), "前天": (2, 2), "今天": (0, 0)}
+    for w, (a, b) in rel.items():
+        if w in text and not text.startswith("今天是"):
+            span(anchor - timedelta(days=a), anchor - timedelta(days=b))
+    if re.search("上周|上星期|上个星期|上礼拜", text):
+        span(wk - timedelta(days=8), anchor - timedelta(days=1))
+    if re.search("这周|本周|这个星期", text):
+        span(wk, anchor)
+    if "上个月" in text or "上月" in text:
+        prev = anchor.replace(day=1) - timedelta(days=1)
+        span(_month_span(prev.year, prev.month)[0], anchor - timedelta(days=1))
+    if "这个月" in text or "本月" in text:
+        span(anchor.replace(day=1), anchor)
+    if "去年" in text:
+        span(date(anchor.year - 1, 1, 1), date(anchor.year - 1, 12, 31))
+    if "今年" in text:
+        span(date(anchor.year, 1, 1), anchor)
+    for m in _ZH_AGO.finditer(text):
+        n = int(m.group(1)) if m.group(1).isdigit() else _ZH_NUM[m.group(1)]
+        unit = m.group(2)
+        days, slack = {"天": (n, 1), "周": (7 * n, 3), "个星期": (7 * n, 3), "星期": (7 * n, 3),
+                       "个月": (30 * n, 10), "年": (365 * n, 60)}[unit]
+        c = anchor - timedelta(days=days)
+        span(c - timedelta(days=slack), c + timedelta(days=slack))
+
+
 def strip_anchor(query: str) -> str:
     """The question without a leading "today is <date>" clause: the date steers time filtering, but its words
     (year, weekday, digits) would only add noise to lexical and dense matching."""
+    z = _ZH_TODAY.search(query)
+    if z and z.group(1):
+        return (query[:z.start()] + re.sub(r"^\s*[。.,，;；:：]?", "", query[z.end():])).strip()
     t = _TODAY_RE.search(query)
     if not t:
         return query
