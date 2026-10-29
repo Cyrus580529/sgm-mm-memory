@@ -65,6 +65,17 @@ failure) behind Caddy (automatic TLS); then fill in `/opt/sgm-mm-memory/.env` an
   `ADD_MAX_DEFERS` retries of the same request, the Add is committed without the missing descriptions/vectors and a
   background loop fills them in once the provider is back (the user's index is then rebuilt). Inputs a provider
   refuses are stored without a description. During Search any failing model call only removes its signal.
+- The platform's Answer keeps only the prefix of results that fits its 117,760 input tokens. Results are
+  assembled against that budget (with a margin for tokenizer differences): an item that does not fit gives up its
+  images for their descriptions, and is skipped if it still does not fit, so the cut never drops a better-ranked
+  memory. `IMAGE_TOKENS` sets the per-image estimate.
+- Search never fails a question on an odd query part (the platform does not retry a 4xx on Search): unusable parts
+  are skipped. Adds that arrive concurrently are ordered by timestamp, then by the ordinal at the end of
+  `request_id`, then by arrival.
+- Memory is bounded: at most `ADD_MAX_INFLIGHT` Adds are decoded at once and `RENDER_MAX_INFLIGHT` responses
+  assembled at once; others wait (64 concurrent 18 MiB Adds peaked under 1 GB).
+- Provider error bodies are not logged (they may echo evaluation content); evaluation data should be deleted
+  within 30 days of a run (`scripts/purge.py`).
 - Search responses are kept under the 30 MiB limit: original images are dropped from the lowest-ranked items first
   (their descriptions stay). Out-of-range or malformed timestamps are treated as absent; images over 64 megapixels
   are stored as sent without decoding.

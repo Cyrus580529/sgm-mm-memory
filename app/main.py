@@ -73,6 +73,8 @@ async def lifespan(_: FastAPI):
     state["indexes"] = OrderedDict()
     state["index_locks"] = {}
     state["dirty"] = set()               # users whose records were repaired since their index was built
+    state["add_gate"] = asyncio.Semaphore(settings.add_max_inflight)
+    state["render_gate"] = asyncio.Semaphore(settings.render_max_inflight)
     state["started"] = time.time()
     state["last_error"] = None
     repair = asyncio.create_task(repair_loop())
@@ -116,6 +118,20 @@ def clean_ts(ts) -> Optional[int]:
     except (TypeError, ValueError, OverflowError):
         return None
     return v if TS_RANGE[0] < v < TS_RANGE[1] else None
+
+
+def query_parts(query) -> list:
+    """Search is lenient: the platform does not retry a permanent 4xx on Search, so an unusable part (bad image,
+    unknown type) is skipped rather than failing the question."""
+    if isinstance(query, str):
+        return [("text", query)] if query.strip() else []
+    out = []
+    for p in query if isinstance(query, list) else []:
+        try:
+            out.extend(split_content([p]))
+        except BadInput:
+            stats["search_parts_skipped"] += 1
+    return out
 
 
 def split_content(content) -> list:
@@ -382,6 +398,11 @@ def finish_rows(store: Store, rows: list) -> None:
 async def add(req: Request):
     if not authorized(req):
         return error(401, "unauthorized")
+    async with state["add_gate"]:  # the body is read and decoded only once a slot is free
+        return await add_inner(req)
+
+
+async def add_inner(req: Request):
     try:
         body = AddBody.model_validate(await req.json())
     except Exception as e:
@@ -470,10 +491,7 @@ async def search(req: Request):
         return error(401, "unauthorized")
     try:
         body = SearchBody.model_validate(await req.json())
-        q_parts = split_content(body.query)
-    except BadInput as e:
-        stats["search_invalid"] += 1
-        return error(400, str(e))
+        q_parts = query_parts(body.query)
     except Exception as e:
         stats["search_invalid"] += 1
         return error(422, f"invalid request: {str(e)[:300]}")
@@ -522,7 +540,11 @@ async def search(req: Request):
         seen = set(order)  # the whole memory fits: keep the ranking, then append what no signal matched
         order += sorted((k for k in range(len(units)) if k not in seen), key=lambda k: -(units[k].ts or 0))
 
-    def assemble():
-        return retrieval.fit_response(retrieval.render(units, order[:body.top_k], store, settings))
+    budget = retrieval.answer_budget(settings, q_text, opts)
 
-    return {"data": await asyncio.to_thread(assemble)}
+    def assemble():
+        items = retrieval.render(units, order, store, settings, budget)[:body.top_k]
+        return retrieval.fit_response(items)
+
+    async with state["render_gate"]:
+        return {"data": await asyncio.to_thread(assemble)}

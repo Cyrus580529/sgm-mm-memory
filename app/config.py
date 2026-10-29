@@ -63,11 +63,21 @@ class Settings:
     # raw image bytes per Search response; base64 adds 4/3, so 18 MiB stays under the 30 MiB response cap
     max_images_bytes: int = int(_env("MAX_IMAGES_BYTES", str(18 * 1024 * 1024)))
     max_images: int = int(_env("MAX_IMAGES", "40"))
+    # The platform's Answer keeps only the prefix of our results that fits 117,760 input tokens (128k window minus
+    # 8,192 output and 2,048 safety). We budget for it ourselves so the cut falls where we choose: images give way
+    # to their descriptions first, then items that do not fit are skipped. 1,024 tokens for instructions, 15% for
+    # tokenizer differences; an image is counted as IMAGE_TOKENS (depends on the unknown Answer model).
+    answer_window: int = int(_env("ANSWER_INPUT_TOKENS", "117760"))
+    image_tokens: int = int(_env("IMAGE_TOKENS", "1100"))
     index_cache_records: int = int(_env("INDEX_CACHE_RECORDS", "300000"))  # in-memory search indexes, all users
 
     # Provider outages during Add: answer 503 (Retry-After seconds) up to ADD_MAX_DEFERS times per request, then
     # commit without descriptions/vectors and fill them in from the background repair loop.
     add_max_defers: int = int(_env("ADD_MAX_DEFERS", "4"))
+    # Memory bounds: Adds (up to 30 MiB bodies) and Search response assembly beyond these counts wait their turn
+    # instead of being decoded side by side (64 concurrent 30 MiB Adds would need several GB).
+    add_max_inflight: int = int(_env("ADD_MAX_INFLIGHT", "16"))
+    render_max_inflight: int = int(_env("RENDER_MAX_INFLIGHT", "32"))
     retry_after: int = int(_env("RETRY_AFTER", "30"))
     repair_interval: float = float(_env("REPAIR_INTERVAL", "60"))
 

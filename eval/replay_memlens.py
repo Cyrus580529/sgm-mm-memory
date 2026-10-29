@@ -164,6 +164,9 @@ def main():
                 stats["ALL"][k].append(v)
                 stats[it["question_type"]][k].append(v)
             stats["_units"]["n"].append(len(idx.units))
+            from app.retrieval import item_tokens
+            stats["_returned"]["n"].append(len(got))
+            stats["_returned"]["tok"].append(sum(item_tokens(x, svc.settings.image_tokens) for x in res.json()["data"]))
             if dump:
                 first = {}
                 for r, sid in enumerate(got):
@@ -179,6 +182,10 @@ def main():
         if pending:
             flush()
     units = stats.pop("_units")["n"]
+    ret = stats.pop("_returned", {"n": [0], "tok": [0]})
+    med = lambda v: sorted(v)[len(v) // 2]
+    print(f"returned items median={med(ret['n'])} min={min(ret['n'])}; estimated tokens median={med(ret['tok'])} "
+          f"max={max(ret['tok'])}")
     summary = {g: {f"R@{k}": round(sum(v) / len(v), 3) for k, v in ks.items()} | {"n": len(ks[10])}
                for g, ks in sorted(stats.items())}
     print(f"split={args.split} with_date={args.with_date} exchanges/user median="

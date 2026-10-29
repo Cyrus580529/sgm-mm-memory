@@ -400,12 +400,23 @@ def arrival_order(records: list) -> dict:
     by_req = {}
     for i, r in enumerate(records):
         by_req.setdefault(r.request_id, []).append(i)
+    first = {req: min(records[i].id for i in ids) for req, ids in by_req.items()}
     req_time, last = {}, 0
-    for req, ids in sorted(by_req.items(), key=lambda kv: min(records[i].id for i in kv[1])):
-        ts = [records[i].ts for i in ids if records[i].ts is not None]
+    # Adds may arrive concurrently, so arrival is a weak order: the ordinal the platform puts at the end of
+    # request_id (e.g. "...:chunk-12") comes first, arrival breaks ties
+    for req in sorted(by_req, key=lambda q: (request_ordinal(q), first[q])):
+        ts = [records[i].ts for i in by_req[req] if records[i].ts is not None]
         last = min(ts) if ts else last
-        req_time[req] = (last, min(records[i].id for i in ids))
+        req_time[req] = (last, request_ordinal(req), first[req])
     return {i: (*req_time[r.request_id], r.msg_index) for i, r in enumerate(records)}
+
+
+_ORDINAL = re.compile(r"(\d+)\D*$")
+
+
+def request_ordinal(request_id: str) -> int:
+    m = _ORDINAL.search(request_id)
+    return int(m.group(1)) if m and len(m.group(1)) < 12 else 0
 
 
 def build_units(records: list) -> tuple:
@@ -478,13 +489,43 @@ def unit_text(u: "Unit", store: Store) -> str:
     return "\n".join(l for l in lines if l)
 
 
-def render(units: list, order: list, store: Store, s: Settings) -> list:
-    """Search response items. Original images are attached while the image budget lasts;
-    after that the image's schema description stands in for it."""
+_CJK_CHAR = re.compile(r"[\u3000-\u9fff\uac00-\ud7af\uff00-\uffef]")
+
+
+def est_tokens(text: str) -> int:
+    """Rough token count, erring high: CJK about one token per character, other text about 3.6 characters."""
+    cjk = len(_CJK_CHAR.findall(text))
+    return cjk + int((len(text) - cjk) / 3.6) + 1
+
+
+def item_tokens(item: dict, image_tokens: int) -> int:
+    c = item["content"]
+    if isinstance(c, str):
+        return est_tokens(c) + 20
+    return sum(image_tokens if p["type"] == "image_url" else est_tokens(p.get("text", "")) for p in c) + 20
+
+
+def without_images(item: dict) -> dict:
+    c = item["content"]
+    if isinstance(c, str):
+        return item
+    return {**item, "content": "\n".join(p["text"] for p in c if p["type"] == "text")}
+
+
+def answer_budget(s: Settings, query_text: str, options_text: str) -> int:
+    return int((s.answer_window - 1024) / 1.15) - est_tokens(query_text) - est_tokens(options_text)
+
+
+def render(units: list, order: list, store: Store, s: Settings, budget: Optional[int] = None) -> list:
+    """Search response items in rank order. Original images are attached while the image allowance lasts (after
+    that the image's description stands in). With a token budget, an item that does not fit is sent without its
+    images if that fits, else skipped, so the platform's prefix cut never drops a better-ranked memory."""
     items, img_bytes, n_img = [], 0, 0
+    used = 0
     for k in order:
         u: Unit = units[k]
         when = fmt_time(u.ts)
+        item_bytes = item_imgs = 0  # this item's share of the image allowance, returned if its images are dropped
         parts, has_image = [{"type": "text", "text": f"[{when + ' | ' if when else ''}session {u.session_id}]"}], False
         for r in u.records:
             parts.append({"type": "text", "text": f"{r.role}:"})
@@ -498,16 +539,29 @@ def render(units: list, order: list, store: Store, s: Settings) -> list:
                     parts.append({"type": "image_url", "image_url": {"url": got[0]}})
                     img_bytes += got[1]
                     n_img += 1
+                    item_bytes += got[1]
+                    item_imgs += 1
                     has_image = True
                     if meta or desc:
                         parts.append({"type": "text", "text": "(image " + "; ".join(x for x in (meta, desc) if x) + ")"})
                 else:
                     parts.append({"type": "text", "text": "[image " + "; ".join(x for x in (meta, desc or "no description") if x) + "]"})
         content = parts if has_image else "\n".join(p["text"] for p in parts)
-        item = {"id": str(u.records[0].id), "content": content, "score": round(1.0 / (1 + len(items)), 6)}
+        item = {"id": str(u.records[0].id), "content": content}
         if u.ts is not None:
             item["created_at"] = datetime.fromtimestamp(u.ts / 1000, tz=timezone.utc).isoformat()
+        if budget is not None:
+            cost = item_tokens(item, s.image_tokens)
+            if used + cost > budget and has_image:
+                item = without_images(item)
+                img_bytes, n_img = img_bytes - item_bytes, n_img - item_imgs
+                cost = item_tokens(item, s.image_tokens)
+            if used + cost > budget:
+                continue
+            used += cost
         items.append(item)
+    for i, it in enumerate(items):  # scores follow the final order
+        it["score"] = round(1.0 / (1 + i), 6)
     return items
 
 

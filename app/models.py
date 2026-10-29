@@ -61,7 +61,7 @@ class Models:
                 if r.status_code == 200:
                     return r.json()
                 if r.status_code not in (408, 409, 425, 429) and r.status_code < 500:
-                    log.error("model call %s -> %s %s", url, r.status_code, r.text[:300])
+                    log.error("model call %s -> %s", url, r.status_code)  # no body: it may echo input content
                     raise ModelRejected(f"{url} -> {r.status_code}")
                 log.warning("model call %s -> %s, retrying", url, r.status_code)
             except httpx.TransportError as e:

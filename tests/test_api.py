@@ -305,3 +305,44 @@ def test_response_size_guard():
     assert isinstance(out[-1]["content"], str) and isinstance(out[0]["content"], list)   # lowest-ranked lose images
     texts = [{"id": str(i), "content": "x" * 1000} for i in range(10)]
     assert len(fit_response(texts, limit=5000)) < 10
+
+
+def test_search_skips_unusable_query_parts(client):
+    add(client, "q1", "u11", "s1", [{"role": "user", "content": "my passport is in the top drawer"}])
+    bad = [{"type": "text", "text": "where is my passport?"},
+           {"type": "image_url", "image_url": {"url": "https://example.com/x.png"}},
+           {"type": "image_url", "image_url": {"url": "data:image/gif;base64,R0lGODlhAQABAAAAACw="}},
+           {"type": "audio", "data": "x"}]
+    r = search(client, "u11", bad)
+    assert r.status_code == 200 and "drawer" in r.json()["data"][0]["content"]
+    r = search(client, "u11", [{"type": "image_url", "image_url": {"url": "nope"}}])
+    assert r.status_code == 200 and len(r.json()["data"]) == 1            # nothing usable: most recent memories
+
+
+def test_answer_token_budget():
+    from types import SimpleNamespace
+    from app.config import Settings
+    from app.retrieval import Unit, est_tokens, render
+    rec = lambda i, text, imgs=(): SimpleNamespace(id=i, ts=1717000000000 + i, event_ts=None, role="user",
+                                                   session_id="s", request_id=f"r{i}", msg_index=0, text=text,
+                                                   images=list(imgs), parts=[["text", text]] + [["image", h] for h in imgs])
+    store = SimpleNamespace(image_description=lambda h: "a red mug", image_meta=lambda h: None,
+                            image_data_uri=lambda h: ("data:image/png;base64,AAAA", 3))
+    units = [Unit([rec(1, "short note")], "s", 0), Unit([rec(2, "word " * 4000)], "s", 1),
+             Unit([rec(3, "photo of the mug", ["h1"])], "s", 2), Unit([rec(4, "another short note")], "s", 3)]
+    s = Settings()
+    object.__setattr__(s, "image_tokens", 1000)
+    out = render(units, [0, 1, 2, 3], store, s, budget=900)
+    ids = [it["id"] for it in out]
+    assert ids == ["1", "3", "4"]                        # the oversized item is skipped, later ones still fit
+    assert isinstance(out[1]["content"], str) and "red mug" in out[1]["content"]   # image gave way to its description
+    assert [it["score"] for it in out] == sorted([it["score"] for it in out], reverse=True)
+    assert est_tokens("你好世界") >= 4 and est_tokens("hello world") >= 3
+
+
+def test_out_of_order_adds_follow_request_ordinal(client):
+    # chunk-2 arrives before chunk-1, no timestamps: the request ordinal restores the order
+    add(client, "run:sample:0:chunk-2", "u12", "s", [{"role": "assistant", "content": "It is under the sofa."}])
+    add(client, "run:sample:0:chunk-1", "u12", "s", [{"role": "user", "content": "Where did the cat hide the toy mouse?"}])
+    data = search(client, "u12", "toy mouse").json()["data"]
+    assert len(data) == 1 and data[0]["content"].index("toy mouse") < data[0]["content"].index("sofa")
