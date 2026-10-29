@@ -7,6 +7,8 @@ import hmac
 import json
 import logging
 import re
+
+import numpy as np
 from contextlib import asynccontextmanager
 from typing import Any, Optional, Union
 
@@ -60,7 +62,7 @@ async def lifespan(_: FastAPI):
     check_competition_models(settings)
     if not settings.memory_api_key:
         raise RuntimeError("MEMORY_API_KEY is not set")
-    state["store"] = Store(settings.data_dir)
+    state["store"] = Store(settings.data_dir, settings.emb_dim)
     state["models"] = Models(settings)
     state["add_locks"] = {}
     state["indexes"] = {}
@@ -141,17 +143,44 @@ async def describe_missing(store: Store, models: Models, jobs: list) -> None:
     await asyncio.gather(*(one(h, u, c) for h, (u, c) in todo.items()))
 
 
-async def embed_cached(store: Store, models: Models, texts: list) -> list:
+async def embed_cached(store: Store, models: Models, texts: list, text_type: str) -> list:
     """Embeddings, computed once per distinct text (the same history may be written for many samples)."""
-    keys = [hashlib.sha256(f"{settings.emb_model}|{settings.emb_dim}|{t}".encode()).hexdigest() for t in texts]
+    tag = f"{settings.emb_model}|{settings.emb_dim}|{settings.emb_style}|{text_type}|"
+    keys = [hashlib.sha256((tag + t).encode()).hexdigest() for t in texts]
     have = store.cached_vecs(list(set(keys)))
     todo = {k: t for k, t in zip(keys, texts) if k not in have}
     if todo:
-        new = await models.embed(list(todo.values()))
+        new = await models.embed(list(todo.values()), text_type)
         fresh = dict(zip(todo.keys(), new))
         store.put_vecs(fresh)
         have.update(fresh)
     return [have[k] for k in keys]
+
+
+async def rerank_lists(store: Store, models: Models, q_full: str, q_hashes: list, units: list, cands: list) -> list:
+    """Extra (weight, unit ranking) votes from the rerankers: one over candidate texts, one over candidate images.
+    A failing reranker only removes its vote."""
+    if q_full:
+        query = q_full[:2000]
+    elif q_hashes:
+        query = {"image": store.image_data_uri(q_hashes[0])[0]}
+    else:
+        return []
+    jobs = []
+    docs = [{"text": retrieval.unit_text(units[k], store)[:3000] or " "} for k in cands]
+    jobs.append((cands, 0.0, models.rerank(query, docs, settings.rerank_text_model)))
+    img_units = [k for k in cands if units[k].images][:40]
+    if img_units:
+        idocs = [{"image": store.image_data_uri(retrieval.first_image(units[k]))[0]} for k in img_units]
+        jobs.append((img_units, settings.rerank_vl_min, models.rerank(query, idocs, settings.rerank_vl_model)))
+    out = []
+    results = await asyncio.gather(*(j for _, _, j in jobs), return_exceptions=True)
+    for (keys, min_score, _), res in zip(jobs, results):
+        if isinstance(res, Exception):
+            log.error("rerank failed: %s", res)
+            continue
+        out.append((settings.rerank_weight, [keys[i] for i, sc in res if 0 <= i < len(keys) and sc >= min_score]))
+    return out
 
 
 @app.get("/health")
@@ -212,9 +241,12 @@ async def add(req: Request):
             r["embed_text"] = "\n".join([f"{r['role']}: {r['text']}"] + imgs)
             r["index_text"] = "\n".join(sorted(dates) + [r["embed_text"]])
         if settings.dense_enabled:
-            vecs = await embed_cached(store, models, [r["embed_text"] for r in rows])
-            for r, v in zip(rows, vecs):
-                r["vec"] = v
+            pieces = [retrieval.spans(r["embed_text"], settings.emb_span_chars) for r in rows]
+            vecs = await embed_cached(store, models, [p for ps in pieces for p in ps], "document")
+            k = 0
+            for r, ps in zip(rows, pieces):
+                r["vec"] = np.stack(vecs[k:k + len(ps)])
+                k += len(ps)
         else:
             for r in rows:
                 r["vec"] = None
@@ -262,7 +294,7 @@ async def search(req: Request):
 
     rankings = [(1.0, cached.bm25.rank(f"{q_full} {opts}"))]
     if settings.dense_enabled and q_full:
-        qv = (await embed_cached(store, models, [q_full]))[0]
+        qv = (await embed_cached(store, models, [q_full[:settings.emb_span_chars]], "query"))[0]
         rankings.append((1.0, retrieval.to_units(retrieval.dense_rank(qv, records, cached.dense), unit_of)))
     base = retrieval.rrf(rankings, settings.rrf_k)
     rankings.append((settings.time_weight, retrieval.time_rank(q_text, units, base)))
@@ -270,6 +302,9 @@ async def search(req: Request):
         hs = set(q_hashes)
         rankings.append((2.0, [k for k, u in enumerate(units) if hs & u.images]))
     fused = retrieval.rrf(rankings, settings.rrf_k)
+    if settings.rerank_enabled and fused:
+        rankings.extend(await rerank_lists(store, models, q_full, q_hashes, units, fused[:settings.rerank_candidates]))
+        fused = retrieval.rrf(rankings, settings.rrf_k)
     if not fused:  # nothing matched lexically and no dense index: fall back to most recent
         fused = sorted(range(len(units)), key=lambda k: -(units[k].ts or 0))
     order = retrieval.order_with_neighbours(fused, units, settings.seed_k, settings.neighbour_window, body.top_k)

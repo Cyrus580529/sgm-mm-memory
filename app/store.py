@@ -65,11 +65,12 @@ class Record:
     images: list
     parts: list
     index_text: str
-    vec: Optional[np.ndarray]
+    vec: Optional[np.ndarray]  # (spans, dim): long texts are embedded in several spans
 
 
 class Store:
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, emb_dim: int = 1024):
+        self.emb_dim = emb_dim
         os.makedirs(os.path.join(data_dir, "images"), exist_ok=True)
         self.data_dir = data_dir
         self.db = sqlite3.connect(os.path.join(data_dir, "memory.db"), check_same_thread=False)
@@ -145,7 +146,8 @@ class Store:
             "SELECT id, session_id, request_id, msg_index, role, ts, event_ts, text, images, parts, index_text, vec"
             " FROM records WHERE user_id=? ORDER BY id", (user_id,)).fetchall()
         return [Record(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], json.loads(r[8]), json.loads(r[9]), r[10],
-                       None if r[11] is None else np.frombuffer(r[11], dtype=np.float32)) for r in rows]
+                       None if r[11] is None else np.frombuffer(r[11], dtype=np.float32).reshape(-1, self.emb_dim))
+                for r in rows]
 
     def user_count(self, user_id: str) -> int:
         return self.db.execute("SELECT COUNT(*) FROM records WHERE user_id=?", (user_id,)).fetchone()[0]

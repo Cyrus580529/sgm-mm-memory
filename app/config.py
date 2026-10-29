@@ -18,11 +18,27 @@ class Settings:
     llm_model: str = _env("LLM_MODEL", "gpt-4o-mini")
     llm_concurrency: int = int(_env("LLM_CONCURRENCY", "8"))
 
-    # text-embedding-v4 (DashScope OpenAI-compatible endpoint).
-    emb_base_url: str = _env("EMB_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    caption_detail: str = _env("CAPTION_DETAIL", "high")  # image detail for descriptions: small text needs "high"
+
+    # text-embedding-v4. EMB_STYLE "dashscope" = native API (query/document text types), "openai" = compatible API.
+    emb_base_url: str = _env("EMB_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")
     emb_api_key: str = _env("EMB_API_KEY")
     emb_model: str = _env("EMB_MODEL", "text-embedding-v4")
     emb_dim: int = int(_env("EMB_DIM", "1024"))
+    emb_style: str = _env("EMB_STYLE", "dashscope")
+    emb_span_chars: int = int(_env("EMB_SPAN_CHARS", "6000"))  # long texts are embedded in spans, scored by max
+
+    # Reranker (unrestricted by the Open-source Methods rules). Empty RERANK_API_KEY falls back to EMB_API_KEY.
+    rerank_base_url: str = _env("RERANK_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")
+    rerank_api_key: str = _env("RERANK_API_KEY") or _env("EMB_API_KEY")
+    rerank_text_model: str = _env("RERANK_TEXT_MODEL", "qwen3-rerank")
+    rerank_vl_model: str = _env("RERANK_VL_MODEL", "qwen3-vl-rerank")
+    rerank_enabled_flag: str = _env("RERANK", "1")
+    rerank_candidates: int = int(_env("RERANK_CANDIDATES", "80"))
+    rerank_weight: float = float(_env("RERANK_WEIGHT", "1.5"))
+    # The image reranker only scores exchanges that carry images, so it votes only for images it judges relevant
+    # (score >= this); otherwise image-bearing exchanges would gain on every query.
+    rerank_vl_min: float = float(_env("RERANK_VL_MIN", "0.5"))
 
     # Retrieval.
     rrf_k: int = int(_env("RRF_K", "60"))
@@ -40,6 +56,10 @@ class Settings:
     @property
     def dense_enabled(self) -> bool:
         return bool(self.emb_api_key)
+
+    @property
+    def rerank_enabled(self) -> bool:
+        return bool(self.rerank_api_key) and self.rerank_enabled_flag == "1"
 
 
 settings = Settings()

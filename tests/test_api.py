@@ -127,3 +127,64 @@ def test_photo_exif_time_and_place(client):
     top = data[0]["content"]
     text = " ".join(p.get("text", "") for p in top) if isinstance(top, list) else top
     assert "Canterbury" in text and "2022-12-24" in text
+
+
+@pytest.fixture()
+def model_client(tmp_path, monkeypatch):
+    """All model features switched on, with fake model calls (no network)."""
+    import numpy as np
+    monkeypatch.setenv("MEMORY_API_KEY", KEY)
+    monkeypatch.setenv("MEMORY_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LLM_API_KEY", "fake")
+    monkeypatch.setenv("EMB_API_KEY", "fake")
+    monkeypatch.setenv("EMB_DIM", "16")
+    monkeypatch.setenv("EMB_SPAN_CHARS", "50")
+    import app.config, app.main, app.models
+    importlib.reload(app.config)
+    importlib.reload(app.models)
+    importlib.reload(app.main)
+    calls = {"describe": 0, "embed": 0, "rerank": []}
+
+    def vec(t):
+        v = np.zeros(16, dtype=np.float32)
+        for w in t.lower().split():
+            v[hash(w) % 16] += 1
+        return v / max(np.linalg.norm(v), 1e-8)
+
+    async def describe(self, uri, ctx):
+        calls["describe"] += 1
+        return "Objects: a green ceramic teapot\nText: none"
+
+    async def embed(self, texts, text_type="document"):
+        calls["embed"] += len(texts)
+        return np.stack([vec(t) for t in texts])
+
+    async def rerank(self, query, docs, model):
+        calls["rerank"].append((model, len(docs)))
+        # text reranker: keeps order; image reranker: judges every image irrelevant
+        return [(i, 0.9 if model == "qwen3-rerank" else 0.1) for i in range(len(docs))]
+
+    monkeypatch.setattr(app.models.Models, "describe_image", describe)
+    monkeypatch.setattr(app.models.Models, "embed", embed)
+    monkeypatch.setattr(app.models.Models, "rerank", rerank)
+    with TestClient(app.main.app) as c:
+        yield c, calls
+
+
+def test_model_paths(model_client):
+    c, calls = model_client
+    img = png(0, 200, 0)
+    long_text = "We talked about trains. " * 10 + "The secret word is pumpernickel."
+    add(c, "a", "u1", "s1", [{"role": "user", "content": [{"type": "text", "text": "my new teapot"},
+                                                          {"type": "image_url", "image_url": {"url": img}}]}])
+    add(c, "b", "u1", "s2", [{"role": "user", "content": long_text}])
+    add(c, "c", "u1", "s3", [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": img}}]}])
+    assert calls["describe"] == 1                       # same image described once
+    data = search(c, "u1", "what colour is the teapot?").json()["data"]
+    assert len(data) == 3
+    assert any("green ceramic teapot" in (p.get("text", "") if isinstance(p, dict) else "")
+               for p in data[0]["content"]) if isinstance(data[0]["content"], list) else True
+    models = [m for m, _ in calls["rerank"]]
+    assert "qwen3-rerank" in models and "qwen3-vl-rerank" in models
+    assert dict(calls["rerank"])["qwen3-vl-rerank"] == 2  # two exchanges carry an image
+    assert "pumpernickel" in search(c, "u1", "secret word pumpernickel").json()["data"][0]["content"]

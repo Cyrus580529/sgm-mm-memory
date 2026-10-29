@@ -63,16 +63,28 @@ def bm25_rank(query: str, docs: list) -> list:
 
 
 def dense_rank(qvec: np.ndarray, records: list, matrix: Optional[tuple] = None) -> list:
-    """matrix: optional precomputed (record indices, stacked vectors)."""
-    idx, mat = matrix if matrix is not None else dense_matrix(records)
-    if not idx:
+    """Records by their best-matching span. matrix: optional precomputed dense_matrix(records)."""
+    owner, mat = matrix if matrix is not None else dense_matrix(records)
+    if mat is None:
         return []
-    return [idx[j] for j in np.argsort(-(mat @ qvec))]
+    best = np.full(len(records), -np.inf, dtype=np.float32)
+    np.maximum.at(best, owner, mat @ qvec)
+    order = np.argsort(-best)
+    return [int(i) for i in order if np.isfinite(best[i])]
 
 
 def dense_matrix(records: list) -> tuple:
-    idx = [i for i, r in enumerate(records) if r.vec is not None]
-    return idx, (np.stack([records[i].vec for i in idx]) if idx else None)
+    """(record index of each span row, stacked span vectors)."""
+    owner, rows = [], []
+    for i, r in enumerate(records):
+        if r.vec is not None:
+            owner.extend([i] * len(r.vec))
+            rows.append(r.vec)
+    return np.asarray(owner, dtype=np.int64), (np.concatenate(rows) if rows else None)
+
+
+def spans(text: str, size: int) -> list:
+    return [text[i:i + size] for i in range(0, len(text), size)] or [""]
 
 
 class UserIndex:
@@ -330,6 +342,20 @@ def order_with_neighbours(fused: list, units: list, seed_k: int, window: int, li
     for k in fused[seed_k:]:
         push(k)
     return out
+
+
+def first_image(u: "Unit") -> str:
+    return next(h for r in u.records for h in r.images)
+
+
+def unit_text(u: "Unit", store: Store) -> str:
+    """Plain-text view of an exchange (with image metadata and descriptions), for the text reranker."""
+    lines = [fmt_time(u.ts)]
+    for r in u.records:
+        lines.append(f"{r.role}: {r.text}")
+        for h in r.images:
+            lines.append("[image] " + " ".join(x for x in (meta_text(store.image_meta(h)), store.image_description(h)) if x))
+    return "\n".join(l for l in lines if l)
 
 
 def render(units: list, order: list, store: Store, s: Settings) -> list:
