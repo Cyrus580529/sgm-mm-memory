@@ -103,5 +103,27 @@ def test_neighbour_context(client):
                                   {"role": "assistant", "content": "Try Dune by Frank Herbert."},
                                   {"role": "user", "content": "Thanks, I will order it."}])
     data = search(client, "u1", "Frank Herbert").json()["data"]
-    assert "Herbert" in data[0]["content"]
-    assert {d["id"] for d in data} == {d["id"] for d in data[:3]} and len(data) == 3
+    # one exchange = the question and its reply; the follow-up turn comes next as neighbouring context
+    assert "recommend a book" in data[0]["content"] and "Herbert" in data[0]["content"]
+    assert len(data) == 2 and "order it" in data[1]["content"]
+
+
+def jpeg_with_exif() -> str:
+    from PIL import Image
+    im = Image.new("RGB", (32, 32), (10, 200, 10))
+    ex = Image.Exif()
+    ex[0x0132] = "2022:12:24 18:03:04"
+    ex[0x8825] = {1: "N", 2: (51.0, 16.0, 48.0), 3: "E", 4: (1.0, 4.0, 48.0)}  # Canterbury
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", exif=ex)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def test_photo_exif_time_and_place(client):
+    add(client, "p1", "u1", "s1", [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": jpeg_with_exif()}}],
+                                    "timestamp": 1730000000000}])
+    add(client, "p2", "u1", "s2", [{"role": "user", "content": "Lunch with Ana in London", "timestamp": 1730000000000}])
+    data = search(client, "u1", "Today is January 3, 2023. Where was I on Christmas Eve last month, in Kent?").json()["data"]
+    top = data[0]["content"]
+    text = " ".join(p.get("text", "") for p in top) if isinstance(top, list) else top
+    assert "Canterbury" in text and "2022-12-24" in text

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from . import retrieval
 from .config import check_competition_models, settings
+from .meta import meta_text
 from .models import Models
 from .store import Store
 
@@ -62,6 +63,7 @@ async def lifespan(_: FastAPI):
     state["store"] = Store(settings.data_dir)
     state["models"] = Models(settings)
     state["add_locks"] = {}
+    state["indexes"] = {}
     log.info("started; captions=%s dense=%s", settings.captions_enabled, settings.dense_enabled)
     yield
 
@@ -139,6 +141,19 @@ async def describe_missing(store: Store, models: Models, jobs: list) -> None:
     await asyncio.gather(*(one(h, u, c) for h, (u, c) in todo.items()))
 
 
+async def embed_cached(store: Store, models: Models, texts: list) -> list:
+    """Embeddings, computed once per distinct text (the same history may be written for many samples)."""
+    keys = [hashlib.sha256(f"{settings.emb_model}|{settings.emb_dim}|{t}".encode()).hexdigest() for t in texts]
+    have = store.cached_vecs(list(set(keys)))
+    todo = {k: t for k, t in zip(keys, texts) if k not in have}
+    if todo:
+        new = await models.embed(list(todo.values()))
+        fresh = dict(zip(todo.keys(), new))
+        store.put_vecs(fresh)
+        have.update(fresh)
+    return [have[k] for k in keys]
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -183,15 +198,21 @@ async def add(req: Request):
                     h = store.put_image(raw, mime)
                     hashes.append(h)
                     ref_parts.append(["image", h])
-                    jobs.append((h, f"data:{mime};base64," + base64.b64encode(raw).decode(), text))
+                    jobs.append((h, store.image_data_uri(h)[0], text))
+            taken = [t for t in ((store.image_meta(h) or {}).get("taken_ms") for h in hashes) if t]
             rows.append({"msg_index": idx, "role": m.role, "ts": m.timestamp, "text": text,
-                         "images": hashes, "parts": ref_parts})
+                         "event_ts": taken[0] if taken else m.timestamp, "images": hashes, "parts": ref_parts})
         await describe_missing(store, models, jobs)
         for r in rows:
-            descs = [store.image_description(h) for h in r["images"]]
-            r["index_text"] = "\n".join([f"{r['role']}: {r['text']}"] + [f"[image] {d}" for d in descs if d])
+            imgs = []
+            for h in r["images"]:
+                meta, desc = meta_text(store.image_meta(h)), store.image_description(h)
+                imgs.append("[image] " + " ".join(x for x in (meta, desc) if x))
+            dates = {retrieval.date_words(r["ts"]), retrieval.date_words(r["event_ts"])} - {""}
+            r["embed_text"] = "\n".join([f"{r['role']}: {r['text']}"] + imgs)
+            r["index_text"] = "\n".join(sorted(dates) + [r["embed_text"]])
         if settings.dense_enabled:
-            vecs = await models.embed([r["index_text"] for r in rows])
+            vecs = await embed_cached(store, models, [r["embed_text"] for r in rows])
             for r, v in zip(rows, vecs):
                 r["vec"] = v
         else:
@@ -216,9 +237,16 @@ async def search(req: Request):
     store: Store = state["store"]
     models: Models = state["models"]
 
-    records = store.user_records(body.user_id)
-    if not records:
+    n = store.user_count(body.user_id)
+    if not n:
         return {"data": []}
+    cached = state["indexes"].get(body.user_id)
+    if cached is None or len(cached.records) != n:
+        cached = retrieval.UserIndex(store.user_records(body.user_id))
+        state["indexes"][body.user_id] = cached
+        while len(state["indexes"]) > 64:  # keep memory bounded: drop the oldest user index
+            state["indexes"].pop(next(iter(state["indexes"])))
+    records, units, unit_of = cached.records, cached.units, cached.unit_of
 
     q_text = "\n".join(v for k, v in q_parts if k == "text")
     q_hashes, jobs = [], []
@@ -227,20 +255,22 @@ async def search(req: Request):
             mime, raw = val
             h = store.put_image(raw, mime)
             q_hashes.append(h)
-            jobs.append((h, f"data:{mime};base64," + base64.b64encode(raw).decode(), q_text))
+            jobs.append((h, store.image_data_uri(h)[0], q_text))
     await describe_missing(store, models, jobs)
     q_full = "\n".join([q_text] + [store.image_description(h) or "" for h in q_hashes]).strip()
     opts = " ".join(str(o) for o in (body.options or []))
 
-    rankings = [(1.0, retrieval.bm25_rank(f"{q_full} {opts}", [r.index_text for r in records]))]
+    rankings = [(1.0, cached.bm25.rank(f"{q_full} {opts}"))]
     if settings.dense_enabled and q_full:
-        qv = (await models.embed([q_full]))[0]
-        rankings.append((1.0, retrieval.dense_rank(qv, records)))
+        qv = (await embed_cached(store, models, [q_full]))[0]
+        rankings.append((1.0, retrieval.to_units(retrieval.dense_rank(qv, records, cached.dense), unit_of)))
+    base = retrieval.rrf(rankings, settings.rrf_k)
+    rankings.append((settings.time_weight, retrieval.time_rank(q_text, units, base)))
     if q_hashes:
         hs = set(q_hashes)
-        rankings.append((2.0, [i for i, r in enumerate(records) if hs & set(r.images)]))
+        rankings.append((2.0, [k for k, u in enumerate(units) if hs & u.images]))
     fused = retrieval.rrf(rankings, settings.rrf_k)
     if not fused:  # nothing matched lexically and no dense index: fall back to most recent
-        fused = list(range(len(records) - 1, -1, -1))
-    order = retrieval.order_with_neighbours(fused, records, settings.seed_k, settings.neighbour_window, body.top_k)
-    return {"data": retrieval.render(records, order, store, settings)}
+        fused = sorted(range(len(units)), key=lambda k: -(units[k].ts or 0))
+    order = retrieval.order_with_neighbours(fused, units, settings.seed_k, settings.neighbour_window, body.top_k)
+    return {"data": retrieval.render(units, order, store, settings)}

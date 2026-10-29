@@ -28,6 +28,7 @@ class Settings:
     rrf_k: int = int(_env("RRF_K", "60"))
     seed_k: int = int(_env("SEED_K", "20"))          # top results that get neighbouring turns attached
     neighbour_window: int = int(_env("NEIGHBOUR_WINDOW", "1"))
+    time_weight: float = float(_env("TIME_WEIGHT", "1.0"))  # RRF weight of the "dated inside the asked period" list
     # raw image bytes per Search response; base64 adds 4/3, so 18 MiB stays under the 30 MiB response cap
     max_images_bytes: int = int(_env("MAX_IMAGES_BYTES", str(18 * 1024 * 1024)))
     max_images: int = int(_env("MAX_IMAGES", "40"))
