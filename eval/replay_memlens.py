@@ -5,7 +5,11 @@ Each user turn plus the assistant turns after it is one Add, stamped with its se
 inline. --with-date prefixes the question with "Today is <question_date>." (whether the platform passes the question
 date is unknown).
 
-usage: python -m eval.replay_memlens DATA_DIR [--split 32k] [--limit N] [--with-date] [--out results.json]
+--answer N also answers up to N questions per type end to end: the Search result goes to the answer model (ANSWER_*
+env, default gpt-4o-mini) with the question date stated, as in MemLens' memory-agent prompts, and is graded with the
+official MemLens judge prompts (JUDGE_* env, default gpt-4o-mini; the benchmark itself uses a Qwen3-235B judge).
+
+usage: python -m eval.replay_memlens DATA_DIR [--split 32k] [--limit N] [--with-date] [--answer N] [--out results.json]
 DATA_DIR holds dataset_<split>.json and img/ (the extracted release_images.tar.gz)
 """
 import argparse
@@ -23,6 +27,11 @@ from datetime import datetime, timezone
 KEY = "eval-key"
 H = {"Authorization": f"Token {KEY}"}
 MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+
+
+MEMLENS_ANSWER_SYSTEM = ("You are answering a question using memories retrieved from a long chat history between a "
+                         "user and an AI assistant, including images the user shared. Use ONLY the memories provided; "
+                         "if they are insufficient, say so briefly. Respond concisely with the final answer.")
 
 
 def lst(v):
@@ -51,6 +60,7 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--dump", default="", help="jsonl with, per question, the rank of each gold session")
     ap.add_argument("--types", default="", help="comma-separated question types to run (default all)")
+    ap.add_argument("--answer", type=int, default=0, help="answer and judge up to N questions per type")
     args = ap.parse_args()
     os.environ["MEMORY_API_KEY"] = KEY
     os.environ["MEMORY_DATA_DIR"] = tempfile.mkdtemp(prefix="memlens_eval_")
@@ -65,6 +75,37 @@ def main():
     t0 = time.time()
     with TestClient(svc.app) as c:
         dump = open(args.dump, "w") if args.dump else None
+        answered, pending, scores = collections.Counter(), [], collections.defaultdict(list)
+        ans_log = open(args.out.replace(".json", "") + ".answers.jsonl" if args.out else os.devnull, "w")
+        judge = None
+        if args.answer:
+            from eval.memlens_judge import Judge
+            judge = Judge(os.path.join(args.data_dir, "official"))
+
+        def flush():
+            import asyncio
+            from eval.answering import chat_many, items_to_parts
+            reqs = []
+            for it, data in pending:
+                head = (f"Today's date for this question: {it['question_date']}\n\n"
+                        "Memories retrieved from the long chat history (text and images):")
+                tail = f"\n\nQuestion: {it['question']}\n\nAnswer:"
+                reqs.append(([{"role": "system", "content": MEMLENS_ANSWER_SYSTEM},
+                              {"role": "user", "content": [{"type": "text", "text": head}] + items_to_parts(data)
+                               + [{"type": "text", "text": tail}]}], 300))
+            answers = asyncio.run(chat_many(reqs))
+            jreqs = []
+            for (it, _), a in zip(pending, answers):
+                key = judge.task_key(it["question_type"], it.get("question_subtype", ""), it["answer"])
+                jreqs.append(([{"role": "user", "content": judge.prompt(key, it["question"], it["answer"], a)}], 400))
+            verdicts = asyncio.run(chat_many(jreqs, "JUDGE"))
+            for (it, _), a, v in zip(pending, answers, verdicts):
+                sc = judge.parse(v)
+                scores["ALL"].append(sc)
+                scores[it["question_type"]].append(sc)
+                ans_log.write(json.dumps({"qid": it["question_id"], "type": it["question_type"], "gold": it["answer"],
+                                          "pred": a, "score": sc}, ensure_ascii=False) + "\n")
+            pending.clear()
         for n, it in enumerate(items):
             if args.types and it["question_type"] not in args.types.split(","):
                 continue
@@ -103,13 +144,18 @@ def main():
                         "messages": msgs})
                     assert r.status_code == 200, r.text
             gold = set(lst(it["answer_session_ids"]))
-            if not gold or it["question_type"] == "answer_refusal":
-                continue
             q = it["question"]
             if args.with_date:
                 q = f"Today is {it['question_date']}. {q}"
             res = c.post("/v1/memories/search", headers=H, json={"query": q, "user_id": user, "top_k": 100})
             assert res.status_code == 200, res.text
+            if args.answer and answered[it["question_type"]] < args.answer:
+                answered[it["question_type"]] += 1
+                pending.append((it, res.json()["data"]))
+                if len(pending) >= 20:
+                    flush()
+            if not gold or it["question_type"] == "answer_refusal":
+                continue
             idx = svc.state["indexes"][user]
             sess_of = {str(u.records[0].id): u.session_id for u in idx.units}
             got = [sess_of[x["id"]] for x in res.json()["data"]]
@@ -130,6 +176,8 @@ def main():
             if (n + 1) % 100 == 0:
                 print(f"{n + 1} questions ({time.time() - t0:.0f}s)", file=sys.stderr)
 
+        if pending:
+            flush()
     units = stats.pop("_units")["n"]
     summary = {g: {f"R@{k}": round(sum(v) / len(v), 3) for k, v in ks.items()} | {"n": len(ks[10])}
                for g, ks in sorted(stats.items())}
@@ -137,6 +185,9 @@ def main():
           f"{sorted(units)[len(units) // 2] if units else 0} missing images={missing_img}")
     for g, s in summary.items():
         print(f"{g:24s} n={s['n']:4d}  R@10={s['R@10']:.3f}  R@30={s['R@30']:.3f}  R@100={s['R@100']:.3f}")
+    for g, v in sorted(scores.items()):
+        summary.setdefault("answer:" + g, {})["acc"] = round(sum(v) / len(v), 3)
+        print(f"answer {g:24s} n={len(v):4d}  judge accuracy={sum(v) / len(v):.3f}")
     if args.out:
         json.dump(summary, open(args.out, "w"), indent=1)
 

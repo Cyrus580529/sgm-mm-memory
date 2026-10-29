@@ -54,7 +54,11 @@ class Settings:
     neighbour_window: int = int(_env("NEIGHBOUR_WINDOW", "1"))
     time_weight: float = float(_env("TIME_WEIGHT", "1.0"))
     recency_weight: float = float(_env("RECENCY_WEIGHT", "0.5"))  # present-state questions: newest relevant first
-    recency_depth: int = int(_env("RECENCY_DEPTH", "200"))  # RRF weight of the "dated inside the asked period" list
+    recency_depth: int = int(_env("RECENCY_DEPTH", "200"))
+    # Result count: at most top_k; RESULT_LIMIT (0 = top_k) caps it lower for large memories. When the user's whole
+    # memory fits, every exchange is returned (ranked ones first, the rest after, newest first).
+    result_limit: int = int(_env("RESULT_LIMIT", "0"))
+    return_all_if_fits: bool = _env("RETURN_ALL_IF_FITS", "1") == "1"  # RRF weight of the "dated inside the asked period" list
     # raw image bytes per Search response; base64 adds 4/3, so 18 MiB stays under the 30 MiB response cap
     max_images_bytes: int = int(_env("MAX_IMAGES_BYTES", str(18 * 1024 * 1024)))
     max_images: int = int(_env("MAX_IMAGES", "40"))

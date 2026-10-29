@@ -375,5 +375,11 @@ async def search(req: Request):
         fused = retrieval.rrf(rankings, settings.rrf_k)
     if not fused:  # nothing matched lexically and no dense index: fall back to most recent
         fused = sorted(range(len(units)), key=lambda k: -(units[k].ts or 0))
-    order = retrieval.order_with_neighbours(fused, units, settings.seed_k, settings.neighbour_window, body.top_k)
+    limit = body.top_k if not settings.result_limit else min(body.top_k, settings.result_limit)
+    if settings.return_all_if_fits and len(units) <= body.top_k:
+        limit = body.top_k
+    order = retrieval.order_with_neighbours(fused, units, settings.seed_k, settings.neighbour_window, limit)
+    if settings.return_all_if_fits and len(units) <= body.top_k and len(order) < len(units):
+        seen = set(order)  # the whole memory fits: keep the ranking, then append what no signal matched
+        order += sorted((k for k in range(len(units)) if k not in seen), key=lambda k: -(units[k].ts or 0))
     return {"data": await asyncio.to_thread(retrieval.render, units, order, store, settings)}

@@ -98,3 +98,45 @@ async def _run(pending: list, out_path: str) -> dict:
 
 def answer_all(pending: list, out_path: str) -> dict:
     return asyncio.run(_run(pending, out_path))
+
+
+# ---- generic helpers (used by the MemLens / MemEye / MobileMem replays) -------------------------------------
+def items_to_parts(items: list, detail: str = "low") -> list:
+    """Search result items -> chat content parts, in returned order (as the platform passes them to Answer)."""
+    parts = []
+    for i, it in enumerate(items, 1):
+        parts.append({"type": "text", "text": f"\n[Memory {i}]"})
+        c = it["content"]
+        if isinstance(c, str):
+            parts.append({"type": "text", "text": c})
+            continue
+        for p in c:
+            if p["type"] == "image_url":
+                parts.append({"type": "image_url", "image_url": {"url": p["image_url"]["url"], "detail": detail}})
+            else:
+                parts.append(p)
+    return parts
+
+
+async def chat_many(requests: list, model_env: str = "ANSWER") -> list:
+    """requests: list of (messages, max_tokens). Returns reply texts ('' on failure). Endpoint from
+    <model_env>_BASE_URL/_API_KEY/_MODEL, falling back to the LLM_* settings and gpt-4o-mini."""
+    base = os.environ.get(f"{model_env}_BASE_URL") or os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
+    key = os.environ.get(f"{model_env}_API_KEY") or os.environ["LLM_API_KEY"]
+    model = os.environ.get(f"{model_env}_MODEL", "gpt-4o-mini")
+    sem = asyncio.Semaphore(int(os.environ.get("ANSWER_CONCURRENCY", "6")))
+    async with httpx.AsyncClient(timeout=300) as client:
+        async def one(messages, max_tokens):
+            async with sem:
+                for attempt in range(5):
+                    try:
+                        r = await client.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"},
+                                              json={"model": model, "temperature": 0, "max_tokens": max_tokens,
+                                                    "messages": messages})
+                        if r.status_code == 200:
+                            return r.json()["choices"][0]["message"]["content"].strip()
+                    except httpx.TransportError:
+                        pass
+                    await asyncio.sleep(2 ** attempt)
+            return ""
+        return await asyncio.gather(*(one(m, t) for m, t in requests))

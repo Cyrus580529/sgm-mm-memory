@@ -219,3 +219,11 @@ def test_provider_outage(model_client, monkeypatch):
     data = search(c, "u9", "blue kettle").json()["data"]
     assert len(data) == 1                                               # lexical retrieval still answers
     monkeypatch.setattr(app.models.Models, "embed", ok_embed)
+
+
+def test_whole_memory_returned_when_it_fits(client):
+    for i, t in enumerate(["I adopted a cat", "My sister lives in Lyon", "I bought a red bike"]):
+        add(client, f"w{i}", "u5", f"s{i}", [{"role": "user", "content": t, "timestamp": 1700000000000 + i}])
+    data = search(client, "u5", "when did I adopt the cat?").json()["data"]
+    assert len(data) == 3 and "cat" in data[0]["content"]          # ranked hit first, the rest still included
+    assert len(search(client, "u5", "pet", top_k=2).json()["data"]) == 2
