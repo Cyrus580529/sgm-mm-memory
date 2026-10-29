@@ -3,3 +3,4 @@ _data/
 *.db
 __pycache__/
 .venv/
+artifacts/
