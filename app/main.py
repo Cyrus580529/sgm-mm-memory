@@ -198,6 +198,24 @@ async def rerank_lists(store: Store, models: Models, q_full: str, q_hashes: list
     return out
 
 
+async def expansion_lists(store: Store, models: Models, cached, q_full: str) -> list:
+    """Lexical and dense votes for gpt-4o-mini's rewrites of the question; any failure just drops them."""
+    try:
+        queries = await models.expand_query(q_full, settings.expand_n)
+    except (ModelUnavailable, ModelRejected) as e:
+        log.error("query expansion failed: %s", e)
+        return []
+    lists = [await asyncio.to_thread(cached.bm25.rank, q) for q in queries]
+    if settings.dense_enabled and queries:
+        try:
+            vecs = await embed_cached(store, models, queries, "query")
+            lists += [retrieval.to_units(retrieval.dense_rank(v, cached.records, cached.dense), cached.unit_of)
+                      for v in vecs]
+        except (ModelUnavailable, ModelRejected) as e:
+            log.error("expansion embedding failed: %s", e)
+    return [(settings.expand_weight / len(lists), l) for l in lists] if lists else []
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -334,13 +352,17 @@ async def search(req: Request):
     q_full = "\n".join([q_text] + [store.image_description(h) or "" for h in q_hashes]).strip()
     opts = " ".join(str(o) for o in (body.options or []))
 
-    rankings = [(1.0, await asyncio.to_thread(cached.bm25.rank, f"{q_full} {opts}"))]
+    rankings = [(1.0, await asyncio.to_thread(cached.bm25.rank, q_full))]
+    if opts:  # answer options include distractors, so they vote separately and below the question itself
+        rankings.append((0.5, await asyncio.to_thread(cached.bm25.rank, opts)))
     if settings.dense_enabled and q_full:
         try:
             qv = (await embed_cached(store, models, [q_full[:settings.emb_span_chars]], "query"))[0]
             rankings.append((1.0, retrieval.to_units(retrieval.dense_rank(qv, records, cached.dense), unit_of)))
         except (ModelUnavailable, ModelRejected) as e:  # degrade to lexical retrieval rather than fail the query
             log.error("query embedding failed: %s", e)
+    if settings.captions_enabled and settings.expand_n and q_full:
+        rankings.extend(await expansion_lists(store, models, cached, q_full))
     base = retrieval.rrf(rankings, settings.rrf_k)
     rankings.append((settings.time_weight, retrieval.time_rank(q_text, units, base)))
     if q_hashes:

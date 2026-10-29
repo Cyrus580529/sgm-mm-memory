@@ -1,5 +1,6 @@
 """Contract tests for Add/Search (no external model calls: captions and dense retrieval disabled)."""
 import base64
+import hashlib
 import importlib
 import io
 import struct
@@ -148,7 +149,7 @@ def model_client(tmp_path, monkeypatch):
     def vec(t):
         v = np.zeros(16, dtype=np.float32)
         for w in t.lower().split():
-            v[hash(w) % 16] += 1
+            v[int(hashlib.md5(w.encode()).hexdigest(), 16) % 16] += 1
         return v / max(np.linalg.norm(v), 1e-8)
 
     async def describe(self, uri, ctx):
@@ -166,7 +167,12 @@ def model_client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(app.models.Models, "describe_image", describe)
     monkeypatch.setattr(app.models.Models, "embed", embed)
+    async def expand(self, q, n):
+        calls.setdefault("expand", []).append(q)
+        return ["green teapot photo", "ceramic teapot"]  # deliberately off-topic for other questions
+
     monkeypatch.setattr(app.models.Models, "rerank", rerank)
+    monkeypatch.setattr(app.models.Models, "expand_query", expand)
     with TestClient(app.main.app) as c:
         yield c, calls
 
@@ -187,6 +193,7 @@ def test_model_paths(model_client):
     models = [m for m, _ in calls["rerank"]]
     assert "qwen3-rerank" in models and "qwen3-vl-rerank" in models
     assert dict(calls["rerank"])["qwen3-vl-rerank"] == 2  # two exchanges carry an image
+    assert calls["expand"] == ["what colour is the teapot?"]
     assert "pumpernickel" in search(c, "u1", "secret word pumpernickel").json()["data"][0]["content"]
 
 

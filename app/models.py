@@ -1,6 +1,7 @@
 """Calls to external models: gpt-4o-mini (descriptions), text-embedding-v4 (dense retrieval) and an
 optional reranker (qwen3-vl-rerank / qwen3-rerank)."""
 import asyncio
+import json
 import logging
 
 import httpx
@@ -21,6 +22,13 @@ Text: every piece of readable text in the image, verbatim (titles, signs, labels
 Event: what is happening or what the image is about
 Time: any visible clue of date, time of day or season
 Context: the conversation text the image was attached to: {context}"""
+
+EXPAND_PROMPT = """You help search a person's long-term memory (past conversations, photos with descriptions, emails,
+documents) for evidence that answers a question. Write {n} short, different search queries that together cover what
+the evidence would contain: the key people, objects, places, events and exact terms; for a question about a picture,
+describe what the picture would show. Do not answer the question and do not add facts that are not implied by it.
+Return JSON: {{"queries": ["...", "..."]}}
+Question: {question}"""
 
 DOC_INSTRUCT = "Given a question about a person's past conversations, photos and documents, retrieve the memory that helps answer it."
 
@@ -71,6 +79,18 @@ class Models:
         async with self.llm_sem:
             out = await self._post(f"{self.s.llm_base_url}/chat/completions", self.s.llm_api_key, body)
         return out["choices"][0]["message"]["content"].strip()
+
+    async def expand_query(self, question: str, n: int) -> list:
+        body = {"model": self.s.llm_model, "temperature": 0, "max_tokens": 200,
+                "response_format": {"type": "json_object"},
+                "messages": [{"role": "user", "content": EXPAND_PROMPT.format(n=n, question=question[:2000])}]}
+        async with self.llm_sem:
+            out = await self._post(f"{self.s.llm_base_url}/chat/completions", self.s.llm_api_key, body, attempts=3)
+        try:
+            qs = json.loads(out["choices"][0]["message"]["content"]).get("queries", [])
+        except (ValueError, AttributeError):
+            return []
+        return [q.strip() for q in qs if isinstance(q, str) and q.strip()][:n]
 
     # ---- text-embedding-v4 ------------------------------------------------
     async def embed(self, texts: list, text_type: str = "document") -> np.ndarray:

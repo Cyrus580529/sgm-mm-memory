@@ -60,7 +60,7 @@ def image_meta(raw: bytes) -> dict:
             if isinstance(off, str) and len(off) == 6:
                 sign = 1 if off[0] == "+" else -1
                 tz = timezone(sign * timedelta(hours=int(off[1:3]), minutes=int(off[4:6])))
-            out["taken"] = local.strftime("%Y-%m-%d %H:%M")
+            out["taken"] = local.strftime("%Y-%m-%d %H:%M:%S")
             # local clock time drives date questions, so keep it as the "UTC" wall-clock value
             out["taken_ms"] = int(local.replace(tzinfo=timezone.utc).timestamp() * 1000)
             out["tz"] = str(tz)
@@ -85,7 +85,7 @@ def meta_text(m: Optional[dict]) -> str:
         return ""
     bits = []
     if m.get("taken"):
-        d = datetime.strptime(m["taken"], "%Y-%m-%d %H:%M")
+        d = datetime.strptime(m["taken"][:16], "%Y-%m-%d %H:%M")
         bits.append(f"photo taken {m['taken']} ({d:%A, %B} {d.day}, {d.year})")
     if m.get("place"):
         bits.append(f"at {m['place']}")

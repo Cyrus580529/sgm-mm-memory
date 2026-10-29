@@ -40,6 +40,12 @@ class Settings:
     # (score >= this); otherwise image-bearing exchanges would gain on every query.
     rerank_vl_min: float = float(_env("RERANK_VL_MIN", "0.5"))
 
+    # Query expansion with gpt-4o-mini: extra search queries, each a lower-weight vote.
+    expand_n: int = int(_env("EXPAND_N", "3"))  # 0 disables
+    # total weight of all expansion votes together (the original question's lexical + dense votes weigh 2.0),
+    # split evenly over them, so a misguided rewrite cannot outvote the question itself
+    expand_weight: float = float(_env("EXPAND_WEIGHT", "1.0"))
+
     # Retrieval.
     rrf_k: int = int(_env("RRF_K", "60"))
     seed_k: int = int(_env("SEED_K", "20"))          # top results that get neighbouring turns attached
