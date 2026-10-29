@@ -1,0 +1,13 @@
+# Replace memory.example.com with the server's domain (an A record pointing to it); Caddy obtains the TLS
+# certificate automatically. Request bodies can be large (images), and Add may run for minutes.
+memory.example.com {
+	request_body {
+		max_size 64MB
+	}
+	reverse_proxy 127.0.0.1:8000 {
+		transport http {
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+}

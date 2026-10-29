@@ -1,0 +1,16 @@
+[Unit]
+Description=SGM-MM-Memory Add/Search service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=memory
+WorkingDirectory=/opt/sgm-mm-memory
+Environment=HOST=127.0.0.1 PORT=8000
+ExecStart=/opt/sgm-mm-memory/scripts/run.sh
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

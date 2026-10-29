@@ -25,6 +25,14 @@ Context: the conversation text the image was attached to: {context}"""
 DOC_INSTRUCT = "Given a question about a person's past conversations, photos and documents, retrieve the memory that helps answer it."
 
 
+class ModelRejected(Exception):
+    """The provider refused this input for good (4xx other than rate limits); retrying will not help."""
+
+
+class ModelUnavailable(Exception):
+    """The provider kept failing (timeouts, 429, 5xx); the caller may retry later."""
+
+
 class Models:
     def __init__(self, s: Settings):
         self.s = s
@@ -32,22 +40,22 @@ class Models:
         self.llm_sem = asyncio.Semaphore(s.llm_concurrency)
         self.emb_sem = asyncio.Semaphore(8)
 
-    async def _post(self, url: str, key: str, body: dict) -> dict:
+    async def _post(self, url: str, key: str, body: dict, attempts: int = 6) -> dict:
         delay = 2.0
-        for attempt in range(6):
+        for attempt in range(attempts):
             try:
                 r = await self.client.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
                 if r.status_code == 200:
                     return r.json()
-                if r.status_code not in (408, 409, 429) and r.status_code < 500:
+                if r.status_code not in (408, 409, 425, 429) and r.status_code < 500:
                     log.error("model call %s -> %s %s", url, r.status_code, r.text[:300])
-                    r.raise_for_status()
+                    raise ModelRejected(f"{url} -> {r.status_code}")
                 log.warning("model call %s -> %s, retrying", url, r.status_code)
             except httpx.TransportError as e:
                 log.warning("model call %s failed (%s), retrying", url, type(e).__name__)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30.0)
-        raise RuntimeError(f"model call to {url} failed after retries")
+        raise ModelUnavailable(f"model call to {url} failed after {attempts} attempts")
 
     # ---- gpt-4o-mini ------------------------------------------------------
     async def describe_image(self, data_uri: str, context: str) -> str:

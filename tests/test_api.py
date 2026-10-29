@@ -188,3 +188,27 @@ def test_model_paths(model_client):
     assert "qwen3-rerank" in models and "qwen3-vl-rerank" in models
     assert dict(calls["rerank"])["qwen3-vl-rerank"] == 2  # two exchanges carry an image
     assert "pumpernickel" in search(c, "u1", "secret word pumpernickel").json()["data"][0]["content"]
+
+
+def test_provider_outage(model_client, monkeypatch):
+    import app.models
+    c, calls = model_client
+    ok_describe = app.models.Models.describe_image
+    ok_embed = app.models.Models.embed
+
+    async def down(self, *a, **k):
+        raise app.models.ModelUnavailable("provider down")
+
+    monkeypatch.setattr(app.models.Models, "describe_image", down)
+    msgs = [{"role": "user", "content": [{"type": "text", "text": "the blue kettle"},
+                                         {"type": "image_url", "image_url": {"url": png(0, 0, 200)}}]}]
+    r = add(c, "k1", "u9", "s1", msgs)
+    assert r.status_code == 503 and r.headers["retry-after"]
+    assert search(c, "u9", "kettle").json() == {"data": []}            # nothing half-written
+    monkeypatch.setattr(app.models.Models, "describe_image", ok_describe)
+    assert add(c, "k1", "u9", "s1", msgs).status_code == 200            # platform retry succeeds
+
+    monkeypatch.setattr(app.models.Models, "embed", down)               # query embedding fails at Search
+    data = search(c, "u9", "blue kettle").json()["data"]
+    assert len(data) == 1                                               # lexical retrieval still answers
+    monkeypatch.setattr(app.models.Models, "embed", ok_embed)

@@ -28,7 +28,25 @@ cp .env.example .env   # fill in keys
 HOST=0.0.0.0 PORT=8000 scripts/run.sh
 ```
 
-Put an HTTPS reverse proxy (e.g. Caddy) in front of the port. Without `LLM_API_KEY` / `EMB_API_KEY` the service still runs, using BM25 only; the declared submission configuration uses both.
+Put an HTTPS reverse proxy (e.g. Caddy) in front of the port.
+
+Server deployment (Ubuntu): `sudo deploy/install.sh` from the checkout installs the service under systemd
+(auto-restart) behind Caddy (automatic TLS). Without a domain, `<ip-with-dashes>.sslip.io` resolves to the server
+and works with Caddy's certificates.
+
+Load and contract test against a running instance: `python scripts/load_test.py https://<host> <Mem-Gallery data dir>`
+(concurrent Adds and Searches; every response is checked against the Add/Search contract).
+
+## Robustness
+
+- Image decoding, EXIF, indexing and response assembly run in a worker pool, so one large request does not
+  stall others.
+- If a model provider is temporarily unavailable during Add, nothing is committed and the service answers 503
+  with `Retry-After`; descriptions already produced are cached, so the platform's retry is cheap. Inputs the
+  provider refuses outright are stored without a description.
+- During Search, a failing embedding or reranker call removes only that signal; lexical retrieval still answers.
+- Per-user search indexes are cached in memory (bounded by total records, least recently used evicted) and
+  rebuilt once when new records arrive. Same-image descriptions and same-text embeddings are computed once. Without `LLM_API_KEY` / `EMB_API_KEY` the service still runs, using BM25 only; the declared submission configuration uses both.
 
 Tests: `uv pip install --python .venv/bin/python -r requirements-dev.txt && .venv/bin/python -m pytest`.
 

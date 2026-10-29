@@ -48,6 +48,7 @@ class Settings:
     # raw image bytes per Search response; base64 adds 4/3, so 18 MiB stays under the 30 MiB response cap
     max_images_bytes: int = int(_env("MAX_IMAGES_BYTES", str(18 * 1024 * 1024)))
     max_images: int = int(_env("MAX_IMAGES", "40"))
+    index_cache_records: int = int(_env("INDEX_CACHE_RECORDS", "300000"))  # in-memory search indexes, all users
 
     @property
     def captions_enabled(self) -> bool:

@@ -73,10 +73,21 @@ class Store:
         self.emb_dim = emb_dim
         os.makedirs(os.path.join(data_dir, "images"), exist_ok=True)
         self.data_dir = data_dir
-        self.db = sqlite3.connect(os.path.join(data_dir, "memory.db"), check_same_thread=False)
+        self.path = os.path.join(data_dir, "memory.db")
+        self._local = threading.local()
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()  # serialises writes; reads run concurrently on per-thread connections
+
+    @property
+    def db(self) -> sqlite3.Connection:
+        """One connection per thread (Add/Search work runs in a thread pool)."""
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = sqlite3.connect(self.path, timeout=60)
+            c.execute("PRAGMA busy_timeout=60000")
+            self._local.conn = c
+        return c
 
     # ---- Add idempotency -------------------------------------------------
     def add_status(self, request_id: str, payload_hash: str) -> str:

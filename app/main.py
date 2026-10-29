@@ -9,6 +9,7 @@ import logging
 import re
 
 import numpy as np
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Any, Optional, Union
 
@@ -19,7 +20,7 @@ from pydantic import BaseModel, Field
 from . import retrieval
 from .config import check_competition_models, settings
 from .meta import meta_text
-from .models import Models
+from .models import ModelRejected, ModelUnavailable, Models
 from .store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -65,7 +66,8 @@ async def lifespan(_: FastAPI):
     state["store"] = Store(settings.data_dir, settings.emb_dim)
     state["models"] = Models(settings)
     state["add_locks"] = {}
-    state["indexes"] = {}
+    state["indexes"] = OrderedDict()
+    state["index_locks"] = {}
     log.info("started; captions=%s dense=%s", settings.captions_enabled, settings.dense_enabled)
     yield
 
@@ -125,22 +127,32 @@ def split_content(content) -> list:
     return out
 
 
-async def describe_missing(store: Store, models: Models, jobs: list) -> None:
-    """jobs: (hash, data_uri, context). Describes each new image once (cached by hash)."""
+async def describe_missing(store: Store, models: Models, jobs: list, strict: bool) -> None:
+    """jobs: (hash, context). Describes each new image once (cached by hash). A refused image is stored with an
+    empty description. If the provider is unavailable, strict (Add) re-raises so the platform retries the Add;
+    otherwise (Search) the image simply goes without a description."""
     if not settings.captions_enabled:
         return
     todo = {}
-    for h, uri, ctx in jobs:
-        if h not in todo and store.image_description(h) is None:
-            todo[h] = (uri, ctx)
+    for h, ctx in jobs:
+        if h not in todo and await asyncio.to_thread(store.image_description, h) is None:
+            todo[h] = ctx
 
-    async def one(h, uri, ctx):
+    async def one(h, ctx):
+        uri = (await asyncio.to_thread(store.image_data_uri, h))[0]
         try:
-            store.set_image_description(h, await models.describe_image(uri, ctx))
-        except Exception as e:  # keep the Add alive; the image is still stored and returned
-            log.error("image description failed for %s: %s", h[:12], e)
+            desc = await models.describe_image(uri, ctx)
+        except ModelRejected as e:
+            log.error("image description refused for %s: %s", h[:12], e)
+            desc = ""
+        await asyncio.to_thread(store.set_image_description, h, desc)
 
-    await asyncio.gather(*(one(h, u, c) for h, (u, c) in todo.items()))
+    results = await asyncio.gather(*(one(h, c) for h, c in todo.items()), return_exceptions=True)
+    errors = [r for r in results if isinstance(r, Exception)]
+    if errors:
+        log.error("%d image descriptions failed: %s", len(errors), errors[0])
+        if strict:
+            raise errors[0]
 
 
 async def embed_cached(store: Store, models: Models, texts: list, text_type: str) -> list:
@@ -166,12 +178,15 @@ async def rerank_lists(store: Store, models: Models, q_full: str, q_hashes: list
         query = {"image": store.image_data_uri(q_hashes[0])[0]}
     else:
         return []
-    jobs = []
-    docs = [{"text": retrieval.unit_text(units[k], store)[:3000] or " "} for k in cands]
-    jobs.append((cands, 0.0, models.rerank(query, docs, settings.rerank_text_model)))
     img_units = [k for k in cands if units[k].images][:40]
+
+    def build_docs():
+        return ([{"text": retrieval.unit_text(units[k], store)[:3000] or " "} for k in cands],
+                [{"image": store.image_data_uri(retrieval.first_image(units[k]))[0]} for k in img_units])
+
+    docs, idocs = await asyncio.to_thread(build_docs)
+    jobs = [(cands, 0.0, models.rerank(query, docs, settings.rerank_text_model))]
     if img_units:
-        idocs = [{"image": store.image_data_uri(retrieval.first_image(units[k]))[0]} for k in img_units]
         jobs.append((img_units, settings.rerank_vl_min, models.rerank(query, idocs, settings.rerank_vl_model)))
     out = []
     results = await asyncio.gather(*(j for _, _, j in jobs), return_exceptions=True)
@@ -186,6 +201,42 @@ async def rerank_lists(store: Store, models: Models, q_full: str, q_hashes: list
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+class Retry(Exception):
+    pass
+
+
+def prepare_rows(store: Store, body: AddBody, parsed: list) -> tuple:
+    """Store images (original + compact copy + EXIF) and build the rows of one Add. Runs in a worker thread."""
+    rows, jobs = [], []
+    for idx, (m, parts) in enumerate(zip(body.messages, parsed)):
+        text = "\n".join(v for k, v in parts if k == "text")
+        ref_parts, hashes = [], []
+        for kind, val in parts:
+            if kind == "text":
+                ref_parts.append(["text", val])
+            else:
+                h = store.put_image(val[1], val[0])
+                hashes.append(h)
+                ref_parts.append(["image", h])
+                jobs.append((h, text))
+        taken = [t for t in ((store.image_meta(h) or {}).get("taken_ms") for h in hashes) if t]
+        rows.append({"msg_index": idx, "role": m.role, "ts": m.timestamp, "text": text,
+                     "event_ts": taken[0] if taken else m.timestamp, "images": hashes, "parts": ref_parts})
+    return rows, jobs
+
+
+def finish_rows(store: Store, rows: list) -> None:
+    for r in rows:
+        imgs = []
+        for h in r["images"]:
+            meta, desc = meta_text(store.image_meta(h)), store.image_description(h)
+            imgs.append("[image] " + " ".join(x for x in (meta, desc) if x))
+        dates = {retrieval.date_words(r["ts"]), retrieval.date_words(r["event_ts"])} - {""}
+        r["embed_text"] = "\n".join([f"{r['role']}: {r['text']}"] + imgs)
+        r["index_text"] = "\n".join(sorted(dates) + [r["embed_text"]])
+        r["vec"] = None
 
 
 @app.post("/v1/memories/add")
@@ -204,55 +255,58 @@ async def add(req: Request):
     ok = {"success": True, "request_id": body.request_id, "user_id": body.user_id, "session_id": body.session_id}
 
     lock = state["add_locks"].setdefault(body.request_id, asyncio.Lock())
-    async with lock:
-        st = store.add_status(body.request_id, payload_hash)
-        if st == "duplicate":
-            return ok
-        if st == "conflict":
-            return error(409, "request_id already used with different content")
-        try:
-            parsed = [split_content(m.content) for m in body.messages]
-        except BadInput as e:
-            return error(400, str(e))
-
-        rows, jobs = [], []
-        for idx, (m, parts) in enumerate(zip(body.messages, parsed)):
-            text = "\n".join(v for k, v in parts if k == "text")
-            ref_parts, hashes = [], []
-            for kind, val in parts:
-                if kind == "text":
-                    ref_parts.append(["text", val])
-                else:
-                    mime, raw = val
-                    h = store.put_image(raw, mime)
-                    hashes.append(h)
-                    ref_parts.append(["image", h])
-                    jobs.append((h, store.image_data_uri(h)[0], text))
-            taken = [t for t in ((store.image_meta(h) or {}).get("taken_ms") for h in hashes) if t]
-            rows.append({"msg_index": idx, "role": m.role, "ts": m.timestamp, "text": text,
-                         "event_ts": taken[0] if taken else m.timestamp, "images": hashes, "parts": ref_parts})
-        await describe_missing(store, models, jobs)
-        for r in rows:
-            imgs = []
-            for h in r["images"]:
-                meta, desc = meta_text(store.image_meta(h)), store.image_description(h)
-                imgs.append("[image] " + " ".join(x for x in (meta, desc) if x))
-            dates = {retrieval.date_words(r["ts"]), retrieval.date_words(r["event_ts"])} - {""}
-            r["embed_text"] = "\n".join([f"{r['role']}: {r['text']}"] + imgs)
-            r["index_text"] = "\n".join(sorted(dates) + [r["embed_text"]])
-        if settings.dense_enabled:
-            pieces = [retrieval.spans(r["embed_text"], settings.emb_span_chars) for r in rows]
-            vecs = await embed_cached(store, models, [p for ps in pieces for p in ps], "document")
-            k = 0
-            for r, ps in zip(rows, pieces):
-                r["vec"] = np.stack(vecs[k:k + len(ps)])
-                k += len(ps)
-        else:
-            for r in rows:
-                r["vec"] = None
-        store.commit_add(body.request_id, body.user_id, body.session_id, payload_hash, rows)
-    state["add_locks"].pop(body.request_id, None)
+    try:
+        async with lock:
+            st = await asyncio.to_thread(store.add_status, body.request_id, payload_hash)
+            if st == "duplicate":
+                return ok
+            if st == "conflict":
+                return error(409, "request_id already used with different content")
+            try:
+                parsed = [split_content(m.content) for m in body.messages]
+            except BadInput as e:
+                return error(400, str(e))
+            rows, jobs = await asyncio.to_thread(prepare_rows, store, body, parsed)
+            try:
+                await describe_missing(store, models, jobs, strict=True)
+                await asyncio.to_thread(finish_rows, store, rows)
+                if settings.dense_enabled:
+                    pieces = [retrieval.spans(r["embed_text"], settings.emb_span_chars) for r in rows]
+                    vecs = await embed_cached(store, models, [p for ps in pieces for p in ps], "document")
+                    k = 0
+                    for r, ps in zip(rows, pieces):
+                        r["vec"] = np.stack(vecs[k:k + len(ps)])
+                        k += len(ps)
+            except (ModelUnavailable, ModelRejected) as e:
+                # nothing is committed yet; descriptions already made are cached, so a retry is cheap
+                log.error("add %s deferred: %s", body.request_id, e)
+                return JSONResponse(status_code=503, headers={"Retry-After": "30"},
+                                    content={"success": False, "error": "model provider unavailable, retry later"})
+            await asyncio.to_thread(store.commit_add, body.request_id, body.user_id, body.session_id,
+                                    payload_hash, rows)
+    finally:
+        if not lock.locked():
+            state["add_locks"].pop(body.request_id, None)
     return ok
+
+
+async def user_index(store: Store, user_id: str):
+    """The user's cached index, rebuilt (once, under a per-user lock) when new records arrived.
+    The cache holds at most INDEX_CACHE_RECORDS records across users; least recently used users are evicted."""
+    cache = state["indexes"]
+    lock = state["index_locks"].setdefault(user_id, asyncio.Lock())
+    async with lock:
+        n = await asyncio.to_thread(store.user_count, user_id)
+        if not n:
+            return None
+        idx = cache.get(user_id)
+        if idx is None or len(idx.records) != n:
+            idx = await asyncio.to_thread(lambda: retrieval.UserIndex(store.user_records(user_id)))
+            cache[user_id] = idx
+        cache.move_to_end(user_id)
+        while len(cache) > 1 and sum(len(i.records) for i in cache.values()) > settings.index_cache_records:
+            cache.popitem(last=False)
+        return idx
 
 
 @app.post("/v1/memories/search")
@@ -269,33 +323,24 @@ async def search(req: Request):
     store: Store = state["store"]
     models: Models = state["models"]
 
-    n = store.user_count(body.user_id)
-    if not n:
+    cached = await user_index(store, body.user_id)
+    if cached is None:
         return {"data": []}
-    cached = state["indexes"].get(body.user_id)
-    if cached is None or len(cached.records) != n:
-        cached = retrieval.UserIndex(store.user_records(body.user_id))
-        state["indexes"][body.user_id] = cached
-        while len(state["indexes"]) > 64:  # keep memory bounded: drop the oldest user index
-            state["indexes"].pop(next(iter(state["indexes"])))
     records, units, unit_of = cached.records, cached.units, cached.unit_of
 
     q_text = "\n".join(v for k, v in q_parts if k == "text")
-    q_hashes, jobs = [], []
-    for kind, val in q_parts:
-        if kind == "image":
-            mime, raw = val
-            h = store.put_image(raw, mime)
-            q_hashes.append(h)
-            jobs.append((h, store.image_data_uri(h)[0], q_text))
-    await describe_missing(store, models, jobs)
+    q_hashes = [await asyncio.to_thread(store.put_image, val[1], val[0]) for kind, val in q_parts if kind == "image"]
+    await describe_missing(store, models, [(h, q_text) for h in q_hashes], strict=False)
     q_full = "\n".join([q_text] + [store.image_description(h) or "" for h in q_hashes]).strip()
     opts = " ".join(str(o) for o in (body.options or []))
 
-    rankings = [(1.0, cached.bm25.rank(f"{q_full} {opts}"))]
+    rankings = [(1.0, await asyncio.to_thread(cached.bm25.rank, f"{q_full} {opts}"))]
     if settings.dense_enabled and q_full:
-        qv = (await embed_cached(store, models, [q_full[:settings.emb_span_chars]], "query"))[0]
-        rankings.append((1.0, retrieval.to_units(retrieval.dense_rank(qv, records, cached.dense), unit_of)))
+        try:
+            qv = (await embed_cached(store, models, [q_full[:settings.emb_span_chars]], "query"))[0]
+            rankings.append((1.0, retrieval.to_units(retrieval.dense_rank(qv, records, cached.dense), unit_of)))
+        except (ModelUnavailable, ModelRejected) as e:  # degrade to lexical retrieval rather than fail the query
+            log.error("query embedding failed: %s", e)
     base = retrieval.rrf(rankings, settings.rrf_k)
     rankings.append((settings.time_weight, retrieval.time_rank(q_text, units, base)))
     if q_hashes:
@@ -308,4 +353,4 @@ async def search(req: Request):
     if not fused:  # nothing matched lexically and no dense index: fall back to most recent
         fused = sorted(range(len(units)), key=lambda k: -(units[k].ts or 0))
     order = retrieval.order_with_neighbours(fused, units, settings.seed_k, settings.neighbour_window, body.top_k)
-    return {"data": retrieval.render(units, order, store, settings)}
+    return {"data": await asyncio.to_thread(retrieval.render, units, order, store, settings)}
