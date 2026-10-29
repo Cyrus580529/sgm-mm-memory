@@ -4,7 +4,11 @@ Each dialog file is one user; each round is one Add (user message with images, t
 For every QA with annotated clue rounds we report the share of clue rounds found in the top 10 / 30 / 100
 search results, overall and per question type.
 
-usage: python -m eval.replay_memgallery DATA_DIR [--files N] [--out results.json]
+With --answer N, up to N questions per type are also answered end to end: the Search result (text and
+images) goes to the answer model (ANSWER_* env, OpenAI-compatible; default the LLM_* settings) with the
+Mem-Gallery task instructions, and scored by Mem-Gallery token F1.
+
+usage: python -m eval.replay_memgallery DATA_DIR [--files N] [--answer N] [--out results.json]
 """
 import argparse
 import base64
@@ -53,6 +57,8 @@ def main():
     ap.add_argument("data_dir")
     ap.add_argument("--files", type=int, default=0)
     ap.add_argument("--out", default="")
+    ap.add_argument("--answer", type=int, default=0)
+    ap.add_argument("--top-k", type=int, default=100)
     args = ap.parse_args()
 
     os.environ.setdefault("MEMORY_API_KEY", KEY)
@@ -66,6 +72,8 @@ def main():
     if args.files:
         files = files[: args.files]
     stats = collections.defaultdict(lambda: collections.defaultdict(list))
+    answered, pending, f1s = collections.Counter(), [], collections.defaultdict(list)
+    ans_path = args.out.replace(".json", "") + ".answers.jsonl" if args.out else "answers.jsonl"
     t0 = time.time()
     with TestClient(svc.app) as c:
         store = svc.state["store"]
@@ -100,19 +108,33 @@ def main():
                 if qimg and os.path.exists(os.path.join(args.data_dir, "dialog", qimg)):
                     q = [{"type": "text", "text": q},
                          {"type": "image_url", "image_url": {"url": data_uri(os.path.join(args.data_dir, "dialog", qimg))}}]
-                res = c.post("/v1/memories/search", headers=H, json={"query": q, "user_id": user, "top_k": 100})
+                res = c.post("/v1/memories/search", headers=H, json={"query": q, "user_id": user, "top_k": args.top_k})
                 assert res.status_code == 200, res.text
                 rounds = [id2round[it["id"]] for it in res.json()["data"]]
                 for k in (10, 30, 100):
                     got = len(clues & set(rounds[:k])) / len(clues)
                     stats[qa["point"]][k].append(got)
                     stats["ALL"][k].append(got)
+                if args.answer and answered[qa["point"]] < args.answer:
+                    answered[qa["point"]] += 1
+                    pending.append((qa, q, res.json()["data"]))
+            if pending:  # answer per file so image payloads do not pile up in memory
+                from eval.answering import answer_all
+                for pt, v in answer_all(pending, ans_path).items():
+                    f1s[pt].extend(v)
+                pending.clear()
             print(f"{stem}: done ({time.time() - t0:.0f}s)", file=sys.stderr)
 
     summary = {p: {f"R@{k}": round(sum(v) / len(v), 3) for k, v in ks.items()} | {"n": len(ks[10])}
                for p, ks in sorted(stats.items())}
+    for p, v in f1s.items():
+        summary.setdefault(p, {})["F1"] = round(sum(v) / len(v), 3)
+        summary[p]["n_ans"] = len(v)
+    if f1s:
+        print(f"answers: {ans_path}", file=sys.stderr)
     for p, s in summary.items():
-        print(f"{p:5s} n={s['n']:4d}  R@10={s['R@10']:.3f}  R@30={s['R@30']:.3f}  R@100={s['R@100']:.3f}")
+        f1 = f"  F1={s['F1']:.3f} (n={s['n_ans']})" if "F1" in s else ""
+        print(f"{p:5s} n={s['n']:4d}  R@10={s['R@10']:.3f}  R@30={s['R@30']:.3f}  R@100={s['R@100']:.3f}{f1}")
     if args.out:
         json.dump(summary, open(args.out, "w"), indent=1)
 

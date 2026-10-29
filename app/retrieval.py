@@ -255,7 +255,7 @@ def fmt_time(ts: Optional[int]) -> str:
 
 @dataclass
 class Unit:
-    """One exchange: consecutive user messages and the replies that follow them, within one session."""
+    """One exchange within a session: the user message(s) of one Add and the replies that follow them."""
     records: list
     session_id: str
     pos: int = 0  # position within its session
@@ -288,7 +288,9 @@ def build_units(records: list) -> tuple:
         cur, pos = None, 0
         for i in ids:
             r = records[i]
-            if cur is None or (r.role == "user" and any(x.role != "user" for x in cur.records)):
+            # a user message opens a new exchange after a reply, or when it arrives in a separate Add
+            if cur is None or (r.role == "user" and (any(x.role != "user" for x in cur.records)
+                                                     or r.request_id != cur.records[-1].request_id)):
                 cur = Unit([], sess, pos)
                 pos += 1
                 units.append(cur)
