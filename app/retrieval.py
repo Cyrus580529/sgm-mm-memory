@@ -392,14 +392,30 @@ class Unit:
         return {h for r in self.records for h in r.images}
 
 
+def arrival_order(records: list) -> dict:
+    """Sort key per record: an Add is placed at its earliest message timestamp (an Add without timestamps at the
+    previous Add's time, i.e. by arrival), and keeps its own message order. Timestamps are optional per message,
+    so ordering by each message's own timestamp could split a question from its untimestamped reply."""
+    by_req = {}
+    for i, r in enumerate(records):
+        by_req.setdefault(r.request_id, []).append(i)
+    req_time, last = {}, 0
+    for req, ids in sorted(by_req.items(), key=lambda kv: min(records[i].id for i in kv[1])):
+        ts = [records[i].ts for i in ids if records[i].ts is not None]
+        last = min(ts) if ts else last
+        req_time[req] = (last, min(records[i].id for i in ids))
+    return {i: (*req_time[r.request_id], r.msg_index) for i, r in enumerate(records)}
+
+
 def build_units(records: list) -> tuple:
     """(units, unit index of each record). Sessions are ordered by timestamp, then arrival."""
     by_session = {}
     for i, r in enumerate(records):
         by_session.setdefault(r.session_id, []).append(i)
     units, unit_of = [], {}
+    order = arrival_order(records)
     for sess, ids in by_session.items():
-        ids.sort(key=lambda i: (records[i].ts if records[i].ts is not None else 0, records[i].id))
+        ids.sort(key=lambda i: order[i])
         cur, pos = None, 0
         for i in ids:
             r = records[i]

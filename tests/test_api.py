@@ -227,3 +227,11 @@ def test_whole_memory_returned_when_it_fits(client):
     data = search(client, "u5", "when did I adopt the cat?").json()["data"]
     assert len(data) == 3 and "cat" in data[0]["content"]          # ranked hit first, the rest still included
     assert len(search(client, "u5", "pet", top_k=2).json()["data"]) == 2
+
+
+def test_reply_without_timestamp_stays_with_its_question(client):
+    add(client, "t1", "u6", "s1", [{"role": "user", "content": "My bike is in garage 7", "timestamp": 1717000000000},
+                                   {"role": "assistant", "content": "Noted: garage 7."}])
+    add(client, "t2", "u6", "s1", [{"role": "user", "content": "I also own a kayak"}])
+    data = search(client, "u6", "where is my bike?").json()["data"]
+    assert len(data) == 2 and "garage 7" in data[0]["content"] and "Noted" in data[0]["content"]

@@ -55,6 +55,7 @@ class Settings:
     time_weight: float = float(_env("TIME_WEIGHT", "1.0"))
     recency_weight: float = float(_env("RECENCY_WEIGHT", "0.5"))  # present-state questions: newest relevant first
     recency_depth: int = int(_env("RECENCY_DEPTH", "200"))
+    options_weight: float = float(_env("OPTIONS_WEIGHT", "0.25"))  # answer options (mostly distractors) as a vote
     # Result count: at most top_k; RESULT_LIMIT (0 = top_k) caps it lower for large memories. When the user's whole
     # memory fits, every exchange is returned (ranked ones first, the rest after, newest first).
     result_limit: int = int(_env("RESULT_LIMIT", "0"))

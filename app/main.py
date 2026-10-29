@@ -353,8 +353,8 @@ async def search(req: Request):
     opts = " ".join(str(o) for o in (body.options or []))
 
     rankings = [(1.0, await asyncio.to_thread(cached.bm25.rank, q_full))]
-    if opts:  # answer options include distractors, so they vote separately and below the question itself
-        rankings.append((0.5, await asyncio.to_thread(cached.bm25.rank, opts)))
+    if opts and settings.options_weight:  # options are mostly distractors: a separate, lower vote
+        rankings.append((settings.options_weight, await asyncio.to_thread(cached.bm25.rank, opts)))
     if settings.dense_enabled and q_full:
         try:
             qv = (await embed_cached(store, models, [q_full[:settings.emb_span_chars]], "query"))[0]
