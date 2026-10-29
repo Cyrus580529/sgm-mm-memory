@@ -37,3 +37,12 @@ def test_strip_anchor():
     assert strip_anchor("Today is 2024/05/31 (Fri) 07:58. How much did I spend?") == "How much did I spend?"
     assert strip_anchor("今天是2025年8月10日。我上周去了哪家餐厅？") == "我上周去了哪家餐厅？"
     assert strip_anchor("What did I buy?") == "What did I buy?"
+
+
+def test_recency_only_for_present_state_questions():
+    from types import SimpleNamespace
+    from app.retrieval import recency_rank
+    items = [SimpleNamespace(ts=t, event_ts=t) for t in (100, 300, 200)]
+    assert recency_rank("What is my favourite tea?", items, [0, 1, 2], 10) == []
+    assert recency_rank("What is my go-to tea now?", items, [0, 2, 1], 10) == [1, 2, 0]
+    assert recency_rank("我现在最喜欢什么茶？", items, [0, 2], 10) == [2, 0]   # only within the relevant candidates

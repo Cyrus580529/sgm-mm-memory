@@ -348,6 +348,20 @@ def time_rank(query: str, items: list, base: list) -> list:
     return sorted(hits, key=lambda i: pos.get(i, len(base) + i))
 
 
+_CURRENT_RE = re.compile(r"\b(now|currently|current|these days|nowadays|lately|at the moment|at present|latest|"
+                         r"most recent(?:ly)?|still|anymore|any more|go-to|these past)\b|现在|目前|如今|最近|当前|还在|"
+                         r"仍然|依然|最新|这阵子|近来", re.I)
+
+
+def recency_rank(query: str, items: list, base: list, depth: int) -> list:
+    """For questions about the present state ("what do I currently ..."), the base ranking's top `depth`
+    candidates ordered newest first: among relevant memories, the latest update is the one that counts."""
+    if not _CURRENT_RE.search(query):
+        return []
+    top = base[:depth]
+    return sorted(top, key=lambda i: -((getattr(items[i], "event_ts", None) or items[i].ts) or 0))
+
+
 def fmt_time(ts: Optional[int]) -> str:
     if ts is None:
         return ""

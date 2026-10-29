@@ -49,6 +49,8 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--with-date", action="store_true")
     ap.add_argument("--out", default="")
+    ap.add_argument("--dump", default="", help="jsonl with, per question, the rank of each gold session")
+    ap.add_argument("--types", default="", help="comma-separated question types to run (default all)")
     args = ap.parse_args()
     os.environ["MEMORY_API_KEY"] = KEY
     os.environ["MEMORY_DATA_DIR"] = tempfile.mkdtemp(prefix="memlens_eval_")
@@ -62,7 +64,10 @@ def main():
     missing_img = 0
     t0 = time.time()
     with TestClient(svc.app) as c:
+        dump = open(args.dump, "w") if args.dump else None
         for n, it in enumerate(items):
+            if args.types and it["question_type"] not in args.types.split(","):
+                continue
             user = f"ml:{args.split}:{it['question_id']}"
             sids, dates = lst(it["haystack_session_ids"]), lst(it["haystack_dates"])
             for sid, date, sess in zip(sids, dates, it["haystack_sessions"]):
@@ -113,6 +118,15 @@ def main():
                 stats["ALL"][k].append(v)
                 stats[it["question_type"]][k].append(v)
             stats["_units"]["n"].append(len(idx.units))
+            if dump:
+                first = {}
+                for r, sid in enumerate(got):
+                    first.setdefault(sid, r)
+                order = sorted(zip(sids, dates), key=lambda x: ms(x[1]))
+                dump.write(json.dumps({"qid": it["question_id"], "type": it["question_type"], "q": it["question"],
+                                       "gold": [{"sid": g, "rank": first.get(g), "date": dict(zip(sids, dates))[g],
+                                                 "chrono": [x[0] for x in order].index(g)} for g in gold],
+                                       "n_sessions": len(sids)}) + "\n")
             if (n + 1) % 100 == 0:
                 print(f"{n + 1} questions ({time.time() - t0:.0f}s)", file=sys.stderr)
 

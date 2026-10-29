@@ -365,6 +365,7 @@ async def search(req: Request):
         rankings.extend(await expansion_lists(store, models, cached, q_full))
     base = retrieval.rrf(rankings, settings.rrf_k)
     rankings.append((settings.time_weight, retrieval.time_rank(q_text, units, base)))
+    rankings.append((settings.recency_weight, retrieval.recency_rank(q_text, units, base, settings.recency_depth)))
     if q_hashes:
         hs = set(q_hashes)
         rankings.append((2.0, [k for k, u in enumerate(units) if hs & u.images]))
