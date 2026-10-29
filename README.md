@@ -61,8 +61,13 @@ failure) behind Caddy (automatic TLS); then fill in `/opt/sgm-mm-memory/.env` an
 
 - Image decoding, EXIF, indexing and response assembly run in a worker pool; SQLite uses one connection per thread.
 - If a model provider is unavailable during Add, nothing is committed and the service answers 503 with
-  `Retry-After`; work already done is cached, so the platform's retry is cheap. Inputs a provider refuses are stored
-  without a description. During Search a failing model call only removes its signal.
+  `Retry-After`; work already done is cached, so the platform's retry is cheap. If the outage outlasts
+  `ADD_MAX_DEFERS` retries of the same request, the Add is committed without the missing descriptions/vectors and a
+  background loop fills them in once the provider is back (the user's index is then rebuilt). Inputs a provider
+  refuses are stored without a description. During Search any failing model call only removes its signal.
+- Search responses are kept under the 30 MiB limit: original images are dropped from the lowest-ranked items first
+  (their descriptions stay). Out-of-range or malformed timestamps are treated as absent; images over 64 megapixels
+  are stored as sent without decoding.
 - Per-user indexes are cached in memory (bounded by total records, least recently used evicted) and rebuilt once
   when new records arrive.
 - Load-tested at the contract's concurrency (64 concurrent Adds, 256 concurrent Searches) without errors.
@@ -72,6 +77,10 @@ failure) behind Caddy (automatic TLS); then fill in `/opt/sgm-mm-memory/.env` an
 | Command | What it does |
 |---|---|
 | `python -m pytest` | unit and API tests (no network) |
+| `python scripts/provider_check.py` | checks the configured model endpoints and suggests `.env` settings |
+| `python scripts/caption_compare.py out.md img...` | image descriptions at high vs low detail, with cost |
+| `GET /stats` (authenticated) | counters for a running instance: Adds, Searches, deferrals, provider failures, repair queue, disk |
+| `python scripts/purge.py` | deletes stored evaluation data after a run |
 | `python scripts/contract_check.py <url>` | checks a running instance against the Add/Search contract |
 | `python scripts/load_test.py <url> <Mem-Gallery dir> --copies 4 --add-conc 64 --search-conc 256` | concurrent load with response validation |
 | `python -m eval.replay_memlens <dir> --split 256k [--answer N]` | MemLens: evidence-session recall; with `--answer`, answers graded by the official MemLens judge prompts |

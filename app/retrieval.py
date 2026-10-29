@@ -1,4 +1,5 @@
 """Hybrid retrieval (BM25 + dense + exact image match, fused by RRF) and response assembly."""
+import json
 import math
 import re
 from collections import Counter
@@ -507,4 +508,29 @@ def render(units: list, order: list, store: Store, s: Settings) -> list:
         if u.ts is not None:
             item["created_at"] = datetime.fromtimestamp(u.ts / 1000, tz=timezone.utc).isoformat()
         items.append(item)
+    return items
+
+
+RESPONSE_LIMIT = 29 * 1024 * 1024  # the contract allows 30 MiB per Search response
+
+
+def fit_response(items: list, limit: int = RESPONSE_LIMIT) -> list:
+    """Keep the serialised response under the size limit: drop original images from the lowest-ranked items first
+    (their descriptions stay), and only if text alone is too large, drop the lowest-ranked items."""
+    size = lambda: len(json.dumps({"data": items}, ensure_ascii=False).encode())
+    # cheap upper bound first (strings dominate; CJK text is at most 3 bytes per character in UTF-8)
+    rough = sum(len(p.get("text", "")) * 3 + len(p.get("image_url", {}).get("url", "")) + 64
+                for it in items for p in (it["content"] if isinstance(it["content"], list)
+                                          else [{"text": it["content"]}])) + 128 * len(items)
+    if rough <= limit or size() <= limit:
+        return items
+    for it in reversed(items):
+        if isinstance(it["content"], list) and any(p["type"] == "image_url" for p in it["content"]):
+            parts = [p if p["type"] != "image_url" else {"type": "text", "text": "[image omitted for size]"}
+                     for p in it["content"]]
+            it["content"] = "\n".join(p["text"] for p in parts)
+            if size() <= limit:
+                return items
+    while items and size() > limit:
+        items.pop()
     return items

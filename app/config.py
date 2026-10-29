@@ -65,6 +65,12 @@ class Settings:
     max_images: int = int(_env("MAX_IMAGES", "40"))
     index_cache_records: int = int(_env("INDEX_CACHE_RECORDS", "300000"))  # in-memory search indexes, all users
 
+    # Provider outages during Add: answer 503 (Retry-After seconds) up to ADD_MAX_DEFERS times per request, then
+    # commit without descriptions/vectors and fill them in from the background repair loop.
+    add_max_defers: int = int(_env("ADD_MAX_DEFERS", "4"))
+    retry_after: int = int(_env("RETRY_AFTER", "30"))
+    repair_interval: float = float(_env("REPAIR_INTERVAL", "60"))
+
     @property
     def captions_enabled(self) -> bool:
         return bool(self.llm_api_key)

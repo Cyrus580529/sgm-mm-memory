@@ -31,7 +31,12 @@ CREATE TABLE IF NOT EXISTS images (
     hash TEXT PRIMARY KEY, mime TEXT NOT NULL, path TEXT NOT NULL, description TEXT, meta TEXT
 );
 CREATE TABLE IF NOT EXISTS emb_cache (key TEXT PRIMARY KEY, vec BLOB NOT NULL);
+-- records committed without descriptions/vectors while a provider was down; filled in later
+CREATE TABLE IF NOT EXISTS repair_queue (record_id INTEGER PRIMARY KEY, user_id TEXT NOT NULL);
 """
+
+
+MAX_PIXELS = 64_000_000  # larger images are stored as sent, never decoded in full
 
 
 def compact_image(data: bytes, mime: str, max_side: int = 1024) -> tuple:
@@ -39,6 +44,8 @@ def compact_image(data: bytes, mime: str, max_side: int = 1024) -> tuple:
     try:
         from PIL import Image, ImageOps
         im = Image.open(io.BytesIO(data))
+        if im.width * im.height > MAX_PIXELS:
+            return mime, data
         im = ImageOps.exif_transpose(im)
         if max(im.size) <= max_side and len(data) <= 300_000:
             return mime, data
@@ -135,8 +142,10 @@ class Store:
         return f"data:{row[0]};base64," + base64.b64encode(raw).decode(), len(raw)
 
     # ---- records ---------------------------------------------------------
-    def commit_add(self, request_id: str, user_id: str, session_id: str, payload_hash: str, rows: list) -> None:
-        """Write all messages of one Add plus its idempotency row in a single transaction."""
+    def commit_add(self, request_id: str, user_id: str, session_id: str, payload_hash: str, rows: list,
+                   degraded: bool = False) -> None:
+        """Write all messages of one Add plus its idempotency row in a single transaction; degraded rows also go to
+        the repair queue."""
         with self.lock:
             cur = self.db.cursor()
             cur.execute("BEGIN")
@@ -148,6 +157,9 @@ class Store:
                      json.dumps(r["images"]), json.dumps(r["parts"], ensure_ascii=False), r["index_text"],
                      None if r["vec"] is None else np.asarray(r["vec"], dtype=np.float32).tobytes()),
                 )
+                if degraded:
+                    cur.execute("INSERT OR IGNORE INTO repair_queue(record_id, user_id) VALUES (?,?)",
+                                (cur.lastrowid, user_id))
             cur.execute("INSERT INTO adds(request_id, user_id, session_id, payload_hash) VALUES (?,?,?,?)",
                         (request_id, user_id, session_id, payload_hash))
             self.db.commit()
@@ -159,6 +171,32 @@ class Store:
         return [Record(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], json.loads(r[8]), json.loads(r[9]), r[10],
                        None if r[11] is None else np.frombuffer(r[11], dtype=np.float32).reshape(-1, self.emb_dim))
                 for r in rows]
+
+    # ---- repair of degraded records ---------------------------------------
+    def repair_batch(self, n: int) -> list:
+        rows = self.db.execute(
+            "SELECT r.id, r.user_id, r.role, r.text, r.ts, r.event_ts, r.images FROM repair_queue q "
+            "JOIN records r ON r.id = q.record_id ORDER BY q.record_id LIMIT ?", (n,)).fetchall()
+        return [dict(id=r[0], user_id=r[1], role=r[2], text=r[3], ts=r[4], event_ts=r[5], images=json.loads(r[6]))
+                for r in rows]
+
+    def repaired(self, record_id: int, index_text: str, vec) -> None:
+        with self.lock:
+            self.db.execute("UPDATE records SET index_text=?, vec=? WHERE id=?",
+                            (index_text, None if vec is None else np.asarray(vec, dtype=np.float32).tobytes(),
+                             record_id))
+            self.db.execute("DELETE FROM repair_queue WHERE record_id=?", (record_id,))
+            self.db.commit()
+
+    def counts(self) -> dict:
+        q = lambda sql: self.db.execute(sql).fetchone()[0]
+        return {"users": q("SELECT COUNT(DISTINCT user_id) FROM records"), "records": q("SELECT COUNT(*) FROM records"),
+                "adds": q("SELECT COUNT(*) FROM adds"), "images": q("SELECT COUNT(*) FROM images"),
+                "images_described": q("SELECT COUNT(*) FROM images WHERE description IS NOT NULL AND description != ''"),
+                "repair_queue": q("SELECT COUNT(*) FROM repair_queue")}
+
+    def ping(self) -> None:
+        self.db.execute("SELECT 1").fetchone()
 
     def user_count(self, user_id: str) -> int:
         return self.db.execute("SELECT COUNT(*) FROM records WHERE user_id=?", (user_id,)).fetchone()[0]

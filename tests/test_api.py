@@ -1,5 +1,6 @@
 """Contract tests for Add/Search (no external model calls: captions and dense retrieval disabled)."""
 import base64
+import json
 import hashlib
 import importlib
 import io
@@ -235,3 +236,72 @@ def test_reply_without_timestamp_stays_with_its_question(client):
     add(client, "t2", "u6", "s1", [{"role": "user", "content": "I also own a kayak"}])
     data = search(client, "u6", "where is my bike?").json()["data"]
     assert len(data) == 2 and "garage 7" in data[0]["content"] and "Noted" in data[0]["content"]
+
+
+def test_long_outage_degrades_then_repairs(model_client, monkeypatch):
+    import asyncio
+    import app.main
+    import app.models
+    c, calls = model_client
+    object.__setattr__(app.main.settings, "add_max_defers", 2)
+    ok_describe = app.models.Models.describe_image
+
+    async def down(self, *a, **k):
+        raise app.models.ModelUnavailable("provider down")
+
+    monkeypatch.setattr(app.models.Models, "describe_image", down)
+    msgs = [{"role": "user", "content": [{"type": "text", "text": "the yellow umbrella"},
+                                         {"type": "image_url", "image_url": {"url": png(250, 220, 0)}}]}]
+    codes = [add(c, "o1", "u7", "s1", msgs).status_code for _ in range(3)]
+    assert codes == [503, 503, 200]                                   # two deferrals, then a degraded commit
+    first = search(c, "u7", "umbrella").json()["data"]
+    assert len(first) == 1 and "green ceramic teapot" not in json.dumps(first)
+    stats = c.get("/stats", headers=H).json()
+    assert stats["store"]["repair_queue"] == 1 and stats["counters"]["add_degraded"] == 1
+
+    monkeypatch.setattr(app.models.Models, "describe_image", ok_describe)  # provider back
+    assert c.portal.call(app.main.repair_once) == 1
+    after = search(c, "u7", "umbrella").json()["data"]
+    assert "green ceramic teapot" in json.dumps(after)                  # description filled in, index rebuilt
+    assert c.get("/stats", headers=H).json()["store"]["repair_queue"] == 0
+    object.__setattr__(app.main.settings, "add_max_defers", 4)
+
+
+def test_reranker_internal_error_does_not_fail_search(model_client, monkeypatch):
+    import app.models
+    c, _ = model_client
+
+    async def broken(self, *a, **k):
+        raise ValueError("unexpected provider payload")
+
+    monkeypatch.setattr(app.models.Models, "rerank", broken)
+    monkeypatch.setattr(app.models.Models, "expand_query", broken)
+    add(c, "rb", "u8", "s1", [{"role": "user", "content": "the violin lesson is on Tuesday"}])
+    r = search(c, "u8", "when is the violin lesson?")
+    assert r.status_code == 200 and "Tuesday" in r.json()["data"][0]["content"]
+
+
+def test_odd_timestamps_are_ignored(client):
+    for i, ts in enumerate([-5, 10 ** 17, 1717000000000.7, "abc"]):
+        r = add(client, f"ts{i}", "u10", "s1", [{"role": "user", "content": f"note {i}", "timestamp": ts}])
+        assert r.status_code == (422 if ts == "abc" else 200), (ts, r.text)
+    assert len(search(client, "u10", "note").json()["data"]) == 3
+
+
+def test_stats_and_health(client):
+    assert client.get("/stats").status_code == 401
+    s = client.get("/stats", headers=H).json()
+    assert {"counters", "store", "disk_free_gb", "models"} <= set(s)
+    assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_response_size_guard():
+    from app.retrieval import fit_response
+    big = "data:image/png;base64," + "A" * 4000
+    items = [{"id": str(i), "content": [{"type": "text", "text": f"item {i}"},
+                                        {"type": "image_url", "image_url": {"url": big}}]} for i in range(5)]
+    out = fit_response(items, limit=12000)
+    assert len(json.dumps({"data": out})) <= 12000 and len(out) == 5
+    assert isinstance(out[-1]["content"], str) and isinstance(out[0]["content"], list)   # lowest-ranked lose images
+    texts = [{"id": str(i), "content": "x" * 1000} for i in range(10)]
+    assert len(fit_response(texts, limit=5000)) < 10
