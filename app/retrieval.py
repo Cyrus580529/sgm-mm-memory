@@ -110,7 +110,7 @@ MONTHS = ["january", "february", "march", "april", "may", "june", "july", "augus
           "november", "december"]
 _MONTH_RE = re.compile(r"\b(early|mid|late|beginning of|end of)?\s*(" + "|".join(MONTHS + ["sept"] + [m[:3] for m in MONTHS])
                        + r")\.?(?:\s+(\d{1,2})(?:st|nd|rd|th)?)?(?:,?\s+(\d{4}))?\b", re.I)
-_ISO_RE = re.compile(r"\b(\d{4})-(\d{2})(?:-(\d{2}))?\b")
+_ISO_RE = re.compile(r"\b(\d{4})[-/](\d{1,2})(?:[-/](\d{1,2}))?\b")
 _YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 
 
@@ -236,9 +236,22 @@ def query_periods(query: str) -> list:
             days, slack = {"day": (n, 1), "week": (7 * n, 3), "month": (30 * n, 10), "year": (365 * n, 60)}[unit]
             c = anchor - timedelta(days=days)
             span(c - timedelta(days=slack), c + timedelta(days=slack))
-        if not preds:  # "today is X" alone: the past up to the anchor is the plausible range
-            span(date(1970, 1, 1), anchor)
     return preds
+
+
+def strip_anchor(query: str) -> str:
+    """The question without a leading "today is <date>" clause: the date steers time filtering, but its words
+    (year, weekday, digits) would only add noise to lexical and dense matching."""
+    t = _TODAY_RE.search(query)
+    if not t:
+        return query
+    tail = query[t.start(1):t.start(1) + 40]
+    m = _ISO_RE.search(tail) or _MONTH_RE.search(tail) or _DMY_RE.search(tail)
+    if not m:
+        return query
+    end = t.start(1) + m.end()
+    rest = re.match(r"\s*(\([A-Za-z]{3}\))?\s*(\d{1,2}:\d{2})?\s*[.,;:]?", query[end:])
+    return (query[:t.start()] + query[end + (rest.end() if rest else 0):]).strip()
 
 
 def time_rank(query: str, items: list, base: list) -> list:

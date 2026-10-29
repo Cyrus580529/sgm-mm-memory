@@ -349,7 +349,7 @@ async def search(req: Request):
     q_text = "\n".join(v for k, v in q_parts if k == "text")
     q_hashes = [await asyncio.to_thread(store.put_image, val[1], val[0]) for kind, val in q_parts if kind == "image"]
     await describe_missing(store, models, [(h, q_text) for h in q_hashes], strict=False)
-    q_full = "\n".join([q_text] + [store.image_description(h) or "" for h in q_hashes]).strip()
+    q_full = "\n".join([retrieval.strip_anchor(q_text)] + [store.image_description(h) or "" for h in q_hashes]).strip()
     opts = " ".join(str(o) for o in (body.options or []))
 
     rankings = [(1.0, await asyncio.to_thread(cached.bm25.rank, q_full))]
