@@ -255,14 +255,14 @@ async def embed_rows(store: Store, models: Models, texts: list) -> list:
 
 
 async def rerank_lists(store: Store, models: Models, q_full: str, q_hashes: list, units: list, cands: list) -> list:
-    """Extra (weight, unit ranking) votes from the rerankers: one over candidate texts, one over candidate images.
-    Any failure only removes the vote."""
+    """Extra (weight, unit ranking) votes from the rerankers: one over candidate texts (queried with the question
+    text), one over candidate images (queried with the question's own image when it has one, e.g. "what plant is
+    this?", else with the text). Any failure only removes the vote."""
     try:
-        if q_full:
-            query = q_full[:2000]
-        elif q_hashes:
-            query = {"image": (await asyncio.to_thread(store.image_data_uri, q_hashes[0]))[0]}
-        else:
+        q_image = {"image": (await asyncio.to_thread(store.image_data_uri, q_hashes[0]))[0]} if q_hashes else None
+        text_query = q_full[:2000] if q_full else None
+        image_query = q_image or text_query
+        if image_query is None:
             return []
         img_units = [k for k in cands if units[k].images][:40]
 
@@ -271,9 +271,9 @@ async def rerank_lists(store: Store, models: Models, q_full: str, q_hashes: list
                     [{"image": store.image_data_uri(retrieval.first_image(units[k]))[0]} for k in img_units])
 
         docs, idocs = await asyncio.to_thread(build_docs)
-        jobs = [(cands, 0.0, models.rerank(query, docs, settings.rerank_text_model))]
+        jobs = [(cands, 0.0, models.rerank(text_query, docs, settings.rerank_text_model))] if text_query else []
         if img_units:
-            jobs.append((img_units, settings.rerank_vl_min, models.rerank(query, idocs, settings.rerank_vl_model)))
+            jobs.append((img_units, settings.rerank_vl_min, models.rerank(image_query, idocs, settings.rerank_vl_model)))
         out = []
         results = await asyncio.gather(*(j for _, _, j in jobs), return_exceptions=True)
         for (keys, min_score, _), res in zip(jobs, results):

@@ -346,3 +346,20 @@ def test_out_of_order_adds_follow_request_ordinal(client):
     add(client, "run:sample:0:chunk-1", "u12", "s", [{"role": "user", "content": "Where did the cat hide the toy mouse?"}])
     data = search(client, "u12", "toy mouse").json()["data"]
     assert len(data) == 1 and data[0]["content"].index("toy mouse") < data[0]["content"].index("sofa")
+
+
+def test_image_question_queries_image_reranker_with_the_image(model_client, monkeypatch):
+    import app.models
+    c, _ = model_client
+    seen = []
+
+    async def rerank(self, query, docs, model):
+        seen.append((model, "image" if isinstance(query, dict) else "text"))
+        return [(i, 0.9) for i in range(len(docs))]
+
+    monkeypatch.setattr(app.models.Models, "rerank", rerank)
+    add(c, "p1", "u13", "s1", [{"role": "user", "content": [{"type": "text", "text": "foxglove in the garden"},
+                                                           {"type": "image_url", "image_url": {"url": png(150, 0, 150)}}]}])
+    search(c, "u13", [{"type": "text", "text": "What plant is shown in the picture?"},
+                      {"type": "image_url", "image_url": {"url": png(140, 10, 140)}}])
+    assert ("qwen3-vl-rerank", "image") in seen and ("qwen3-rerank", "text") in seen
