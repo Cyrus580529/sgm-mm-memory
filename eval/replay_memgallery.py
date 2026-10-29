@@ -43,6 +43,14 @@ def data_uri(path):
     return f"data:{mime};base64," + base64.b64encode(raw).decode()
 
 
+def img_path(data_dir, rel):
+    """Mem-Gallery paths are relative to dialog/ ("../image/..."); MemEye paths to image/."""
+    for p in (os.path.join(data_dir, "dialog", rel), os.path.join(data_dir, "image", rel)):
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def as_list(v):
     if isinstance(v, list):
         return v
@@ -56,6 +64,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("data_dir")
     ap.add_argument("--files", type=int, default=0)
+    ap.add_argument("--glob", default="*.json", help="dialog file pattern, e.g. '*[!n].json' to skip *_Open files")
     ap.add_argument("--out", default="")
     ap.add_argument("--answer", type=int, default=0)
     ap.add_argument("--top-k", type=int, default=100)
@@ -68,7 +77,7 @@ def main():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     import app.main as svc
 
-    files = sorted(glob.glob(os.path.join(args.data_dir, "dialog", "*.json")))
+    files = sorted(glob.glob(os.path.join(args.data_dir, "dialog", args.glob)))
     if args.files:
         files = files[: args.files]
     stats = collections.defaultdict(lambda: collections.defaultdict(list))
@@ -86,10 +95,10 @@ def main():
                 for k, rd in enumerate(sess["dialogues"]):
                     ts = int(day.timestamp() * 1000) + k * 60_000
                     parts = [{"type": "text", "text": rd["user"]}]
-                    for iid, ip in zip(rd.get("image_id") or [], rd.get("input_image") or []):
+                    for iid, ip in zip(as_list(rd.get("image_id")), as_list(rd.get("input_image"))):
                         parts.append({"type": "text", "text": f"image_id: {iid}"})
-                        path = os.path.join(args.data_dir, "dialog", ip)
-                        if os.path.exists(path):  # a few images are missing from the release
+                        path = img_path(args.data_dir, ip)
+                        if path:  # a few images are missing from the release
                             parts.append({"type": "image_url", "image_url": {"url": data_uri(path)}})
                     msgs = [{"role": "user", "content": parts if len(parts) > 1 else rd["user"], "timestamp": ts},
                             {"role": "assistant", "content": rd["assistant"] or "(no reply)", "timestamp": ts + 1}]
@@ -105,18 +114,19 @@ def main():
                     continue
                 q = qa["question"]
                 qimg = qa.get("question_image")
-                if qimg and os.path.exists(os.path.join(args.data_dir, "dialog", qimg)):
+                qimg = as_list(qimg)[0] if isinstance(qimg, str) and qimg.startswith("[") else qimg
+                if qimg and img_path(args.data_dir, qimg):
                     q = [{"type": "text", "text": q},
-                         {"type": "image_url", "image_url": {"url": data_uri(os.path.join(args.data_dir, "dialog", qimg))}}]
+                         {"type": "image_url", "image_url": {"url": data_uri(img_path(args.data_dir, qimg))}}]
                 res = c.post("/v1/memories/search", headers=H, json={"query": q, "user_id": user, "top_k": args.top_k})
                 assert res.status_code == 200, res.text
                 rounds = [id2round[it["id"]] for it in res.json()["data"]]
                 for k in (10, 30, 100):
                     got = len(clues & set(rounds[:k])) / len(clues)
-                    stats[qa["point"]][k].append(got)
+                    stats[str(qa["point"])[:12]][k].append(got)
                     stats["ALL"][k].append(got)
-                if args.answer and answered[qa["point"]] < args.answer:
-                    answered[qa["point"]] += 1
+                if args.answer and answered[str(qa["point"])] < args.answer:
+                    answered[str(qa["point"])] += 1
                     pending.append((qa, q, res.json()["data"]))
             if pending:  # answer per file so image payloads do not pile up in memory
                 from eval.answering import answer_all
