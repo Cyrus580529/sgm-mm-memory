@@ -57,6 +57,7 @@ def main():
     ap.add_argument("--split", default="32k")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--with-date", action="store_true")
+    ap.add_argument("--no-captions", action="store_true", help="omit the dataset captions the platform sends with images")
     ap.add_argument("--out", default="")
     ap.add_argument("--dump", default="", help="jsonl with, per question, the rank of each gold session")
     ap.add_argument("--types", default="", help="comma-separated question types to run (default all)")
@@ -135,6 +136,8 @@ def main():
                             parts.append({"type": "image_url", "image_url": {
                                 "url": f"data:{MIME.get(os.path.splitext(p)[1].lower(), 'image/jpeg')};base64,"
                                        + base64.b64encode(raw).decode()}})
+                            if not args.no_captions and im.get("blip_caption"):  # the platform sends captions too
+                                parts.append({"type": "text", "text": f"caption: {im['blip_caption']}"})
                         if parts:
                             msgs.append({"role": t["role"], "content": parts, "timestamp": base_ts + g * 60_000 + j})
                     if not msgs:

@@ -109,6 +109,7 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--answer", type=int, default=0)
     ap.add_argument("--top-k", type=int, default=100)
+    ap.add_argument("--no-captions", action="store_true", help="omit the dataset captions the platform sends with images")
     ap.add_argument("--grader", default="f1", choices=["f1", "memeye"],
                     help="f1: Mem-Gallery token F1; memeye: MemEye LLM judge (open) / letter match (MCQ files)")
     args = ap.parse_args()
@@ -138,11 +139,14 @@ def main():
                 for k, rd in enumerate(sess["dialogues"]):
                     ts = int(day.timestamp() * 1000) + k * 60_000
                     parts = [{"type": "text", "text": rd["user"]}]
-                    for iid, ip in zip(as_list(rd.get("image_id")), as_list(rd.get("input_image"))):
+                    caps = as_list(rd.get("image_caption"))
+                    for j, (iid, ip) in enumerate(zip(as_list(rd.get("image_id")), as_list(rd.get("input_image")))):
                         parts.append({"type": "text", "text": f"image_id: {iid}"})
                         path = img_path(args.data_dir, ip)
                         if path:  # a few images are missing from the release
                             parts.append({"type": "image_url", "image_url": {"url": data_uri(path)}})
+                        if not args.no_captions and j < len(caps) and caps[j]:  # the platform sends captions too
+                            parts.append({"type": "text", "text": f"caption: {caps[j]}"})
                     msgs = [{"role": "user", "content": parts if len(parts) > 1 else rd["user"], "timestamp": ts},
                             {"role": "assistant", "content": rd["assistant"] or "(no reply)", "timestamp": ts + 1}]
                     r = c.post("/v1/memories/add", headers=H, json={
