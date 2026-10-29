@@ -16,7 +16,9 @@ class Settings:
     llm_base_url: str = _env("LLM_BASE_URL", "https://api.openai.com/v1")
     llm_api_key: str = _env("LLM_API_KEY")
     llm_model: str = _env("LLM_MODEL", "gpt-4o-mini")
-    llm_concurrency: int = int(_env("LLM_CONCURRENCY", "8"))
+    llm_concurrency: int = int(_env("LLM_CONCURRENCY", "8"))  # concurrent provider calls, per kind
+    emb_concurrency: int = int(_env("EMB_CONCURRENCY", "8"))
+    rerank_concurrency: int = int(_env("RERANK_CONCURRENCY", "8"))
 
     caption_detail: str = _env("CAPTION_DETAIL", "high")  # image detail for descriptions: small text needs "high"
 

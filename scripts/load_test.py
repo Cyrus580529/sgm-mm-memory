@@ -3,7 +3,8 @@
 Replays Mem-Gallery dialogs (one user per file, one Add per round) with --add-conc concurrent Adds
 (rounds of one user stay in order, users run in parallel), then --search-conc concurrent Searches.
 
-usage: python scripts/load_test.py BASE_URL MEMGALLERY_DATA_DIR [--files 4] [--add-conc 8] [--search-conc 16]
+usage: python scripts/load_test.py BASE_URL MEMGALLERY_DATA_DIR [--files 4] [--copies 1] [--add-conc 8] [--search-conc 16]
+(the platform's Multimodal contract allows max_add_concurrency 16-64 and search_concurrency 16-256)
 the service key is read from MEMORY_API_KEY
 """
 import argparse
@@ -46,6 +47,7 @@ async def main():
     ap.add_argument("--files", type=int, default=4)
     ap.add_argument("--add-conc", type=int, default=8)
     ap.add_argument("--search-conc", type=int, default=16)
+    ap.add_argument("--copies", type=int, default=1, help="replay each dialog as this many separate users")
     args = ap.parse_args()
     H = {"Authorization": f"Token {os.environ['MEMORY_API_KEY']}"}
     run = uuid.uuid4().hex[:8]
@@ -67,8 +69,8 @@ async def main():
                 return None
             return r
 
-        async def replay(fp):
-            stem = os.path.splitext(os.path.basename(fp))[0]
+        async def replay(fp, copy):
+            stem = os.path.splitext(os.path.basename(fp))[0] + f"#{copy}"
             d = json.load(open(fp))
             user = f"load:{run}:{stem}"
             for sess in d["multi_session_dialogues"]:
@@ -90,7 +92,7 @@ async def main():
             return user, [qa["question"] for qa in d["human-annotated QAs"]]
 
         t0 = time.time()
-        users = await asyncio.gather(*(replay(f) for f in files))
+        users = await asyncio.gather(*(replay(f, k) for f in files for k in range(args.copies)))
         t_add = time.time() - t0
 
         async def ask(user, q):
@@ -108,7 +110,7 @@ async def main():
 
     for kind, v in lat.items():
         print(f"{kind:6s} n={len(v):5d} p50={statistics.median(v):.2f}s p95={pct(v, .95):.2f}s max={max(v):.2f}s")
-    print(f"add phase {t_add:.0f}s, search phase {t_search:.0f}s; response size p50={statistics.median(sizes)/2**20:.1f} MiB "
+    print(f"users={len(users)} add phase {t_add:.0f}s, search phase {t_search:.0f}s; response size p50={statistics.median(sizes)/2**20:.1f} MiB "
           f"max={max(sizes)/2**20:.1f} MiB; errors={len(errors)}")
     for e in errors[:5]:
         print("  ", e)

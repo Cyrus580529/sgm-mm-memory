@@ -12,13 +12,17 @@ from .config import Settings
 log = logging.getLogger(__name__)
 
 SCHEMA_PROMPT = """You are indexing an image that a user shared, so it can be found again later and questions about it
-can be answered. Describe it in these fields, one per line, in English. Be concrete and specific: exact names of
+can be answered. Describe it in these fields, one per line. Write in the language of the conversation context below
+(if it is Chinese, write in Chinese; if there is no context, use the language of the text in the image, else English).
+Keep field names as given. Copy text visible in the image exactly as written, never translated. Be concrete and specific: exact names of
 dishes, objects, products, brands, places, species; colours, sizes, counts and positions; distinguishing details
 that would tell this image apart from similar ones. Write "none" for a field that does not apply.
-Scene: where it is and what kind of image it is (photo, screenshot, slide, chart, document, receipt, artwork ...)
+Scene: where it is and what kind of image it is (photo, phone screenshot of which app, slide, chart, document,
+receipt, artwork ...)
 Objects: the main objects, each with colour, count, material, brand and distinctive attributes
 People: people or animals present, their appearance, clothing and what they are doing
-Text: every piece of readable text in the image, verbatim (titles, signs, labels, prices, numbers, slide text)
+Text: every piece of readable text in the image, verbatim and in its original language (titles, signs, labels,
+prices, numbers, app names, chat messages and timestamps in screenshots, slide text)
 Event: what is happening or what the image is about
 Time: any visible clue of date, time of day or season
 Context: the conversation text the image was attached to: {context}"""
@@ -46,7 +50,8 @@ class Models:
         self.s = s
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0))
         self.llm_sem = asyncio.Semaphore(s.llm_concurrency)
-        self.emb_sem = asyncio.Semaphore(8)
+        self.emb_sem = asyncio.Semaphore(s.emb_concurrency)
+        self.rerank_sem = asyncio.Semaphore(s.rerank_concurrency)  # Search runs up to 256-way concurrent
 
     async def _post(self, url: str, key: str, body: dict, attempts: int = 6) -> dict:
         delay = 2.0
@@ -122,7 +127,8 @@ class Models:
         documents: list of {"text": ...} or {"image": data_uri}."""
         body = {"model": model, "input": {"query": query, "documents": documents},
                 "parameters": {"top_n": len(documents), "return_documents": False, "instruct": DOC_INSTRUCT}}
-        out = await self._post(f"{self.s.rerank_base_url}/services/rerank/text-rerank/text-rerank",
-                               self.s.rerank_api_key, body)
+        async with self.rerank_sem:
+            out = await self._post(f"{self.s.rerank_base_url}/services/rerank/text-rerank/text-rerank",
+                                   self.s.rerank_api_key, body, attempts=3)
         res = sorted(out["output"]["results"], key=lambda r: -r["relevance_score"])
         return [(r["index"], r["relevance_score"]) for r in res]
