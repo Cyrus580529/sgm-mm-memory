@@ -82,7 +82,7 @@ class Settings:
     image_match_bits: int = int(_env("IMAGE_MATCH_BITS", "6"))
     # Beyond the first ASSISTANT_TRIM_AFTER results (0 = never), assistant replies are cut to ASSISTANT_TRIM_CHARS:
     # the user's own words carry most facts, long generic replies mostly use up the Answer window.
-    assistant_trim_after: int = int(_env("ASSISTANT_TRIM_AFTER", "0"))
+    assistant_trim_after: int = int(_env("ASSISTANT_TRIM_AFTER", "20"))
     assistant_trim_chars: int = int(_env("ASSISTANT_TRIM_CHARS", "300"))  # dHash distance for "same picture" (0 = exact only)
     return_image_side: int = int(_env("RETURN_IMAGE_SIDE", "512"))  # 512 px = one tile (~8.5k tokens)
     # The platform's Answer keeps only the prefix of our results that fits 117,760 input tokens (128k window minus

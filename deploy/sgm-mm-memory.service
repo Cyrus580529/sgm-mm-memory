@@ -11,6 +11,12 @@ ExecStart=/opt/sgm-mm-memory/scripts/run.sh
 Restart=always
 RestartSec=3
 LimitNOFILE=65536
+# Shares the host with other work: cap memory (the service peaks under 1 GB at contract concurrency) and give it
+# a lower CPU weight than default services so it never starves them.
+MemoryMax=4G
+MemoryHigh=3G
+CPUWeight=50
+Nice=5
 
 [Install]
 WantedBy=multi-user.target

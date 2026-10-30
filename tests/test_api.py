@@ -423,4 +423,4 @@ def test_assistant_trim_beyond_top_ranks(monkeypatch, client):
                                               {"role": "assistant", "content": long_reply}])
     data = search(client, "u15", "kayak").json()["data"]
     assert len(data[0]["content"]) > 1500 and all(len(d["content"]) < 500 for d in data[1:])
-    object.__setattr__(app.main.settings, "assistant_trim_after", 0)
+    object.__setattr__(app.main.settings, "assistant_trim_after", 20)

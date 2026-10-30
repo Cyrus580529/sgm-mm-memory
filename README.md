@@ -9,29 +9,38 @@ evaluation.
 
 ## Method
 
+One idea: **read images once, at write time, and deliver evidence within the Answer model's budget.** The platform's
+Answer model reads our results inside a fixed 117,760-token window, and under gpt-4o-mini pricing a single image
+costs 8,500–25,500 tokens. So the service turns pictures into text when they are written (paid once, outside the
+window) and sends the reader verbatim evidence, best first, with pixels only where they are most likely to matter.
+
 **Write (Add).** Every message is kept verbatim, images included. For each image the service also stores
-- a structured description by `gpt-4o-mini` in fixed fields (scene, objects, people, verbatim on-image text, event,
-  time), written in the conversation's language and cached by image hash;
+- a structured description by `gpt-4o-mini` at high detail, in fixed fields: scene, objects (colours, counts,
+  brands), people, spatial layout, verbatim on-image text, event, time; in the conversation's language, made once
+  per image (cached by hash, versioned by prompt);
 - capture time and place from the image's own EXIF data (GPS mapped to a place name with an offline GeoNames table);
-- a compact copy (long side ≤ 1024 px) used in responses, so that many images fit within the response limit.
+- a perceptual hash (dHash), so the same picture sent again in another file is recognised.
 
-**Retrieve (Search).** The unit of retrieval is one exchange: the user message(s) of an Add and the replies after
-them. Several signals each produce a ranking of exchanges, merged by reciprocal rank fusion:
-- BM25 over text, image descriptions and dates (Latin words plus CJK characters and bigrams);
-- dense retrieval with `text-embedding-v4` (query/document types; long texts embedded in spans, best span counts);
-- rewrites of the question by `gpt-4o-mini`, together weighing less than the question itself;
-- dates named in the question (absolute, relative to a stated "today", English and Chinese) and, for questions about
-  the present state ("now", "currently", 现在 ...), the newest of the relevant candidates;
-- exact matches of a query image;
-- rerankers `qwen3-rerank` (text) and `qwen3-vl-rerank` (images; votes only for images it judges relevant).
+**Retrieve (Search).** The unit is one exchange (the user message(s) of an Add and the replies after them).
+BM25 (Latin words, CJK characters and bigrams) and `text-embedding-v4` dense retrieval are fused by reciprocal rank;
+`qwen3-rerank` adds a vote over the top candidates; a picture in the question matches stored copies of the same
+picture. The best 20 exchanges bring their neighbouring exchanges; a memory that fits in `top_k` is returned whole.
 
-The top exchanges are followed by their neighbouring exchanges in time. When a user's whole memory fits in `top_k`,
-all of it is returned (ranked exchanges first). Each item carries its date, the original text, the image and its
-description.
+**Deliver.** Results stay in relevance order. Every image carries its text surrogate (capture metadata and
+description); only the four best-ranked images also carry pixels, at 512 px (one tile, ~8.5k tokens). Beyond the
+first 20 results long assistant replies are cut to 300 characters (the user's words are kept whole). Items are
+packed against the Answer window with gpt-4o-mini's image pricing: an item that does not fit gives up its pixels, then
+is skipped, so the platform's prefix cut never drops a better-ranked memory.
+
+**What the ablations removed.** One-factor ablations against a minimal system, answered and graded end to end with
+the benchmarks' official judges (MemLens, MemEye; paired per question), found no measurable gain from query
+rewriting, date and present-state votes, or answer-option votes; these are off by default (`EXPAND_N`,
+`TIME_WEIGHT`, `RECENCY_WEIGHT`, `OPTIONS_WEIGHT`). Chronological or per-session ordering of the returned set scored
+lower than relevance order. Returning no pixels at all scored about the same as four images, i.e. the write-time
+descriptions carry the visual evidence; four 512 px images are kept for fine visual detail.
 
 **Models.** LLM components use only `gpt-4o-mini` and embeddings only `text-embedding-v4`, as the Open-source Methods
-rules require; rerankers are unrestricted by the rules. Without model keys the service still runs (BM25 and the
-non-model signals only).
+rules require; the reranker is unrestricted by the rules. Without model keys the service still runs (lexical only).
 
 ## API
 
@@ -109,7 +118,9 @@ other; they are not official scores.
 - Structured image descriptions follow Schema-Guided Memory (SGM) from ATM-Bench: J. Mei et al., *According to Me:
   Long-Term Personalized Referential Memory QA*, arXiv:2603.01990.
 - BM25 (Robertson et al.) and reciprocal rank fusion (Cormack, Clarke and Buettcher) are standard methods.
-- Verification of image candidates by a reranker is in the spirit of GraphMemix's node verifier (arXiv:2608.26983).
+- Packing evidence for a fixed reader and keeping verbatim evidence first follow observations by AML cycle-1 entrant
+  ActiveMemoryIndex (github.com/linxuhao/ActiveMemoryIndex); the write-time emphasis follows the "memory tax" view
+  that writer quality bounds what any reader can use (arXiv:2610.29823).
 - Offline reverse geocoding uses `reverse_geocoder` with GeoNames data (CC BY 4.0, geonames.org).
 
 ## License
