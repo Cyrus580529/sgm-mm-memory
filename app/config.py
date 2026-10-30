@@ -53,7 +53,7 @@ class Settings:
     rerank_vl_min: float = float(_env("RERANK_VL_MIN", "0.5"))
 
     # Query expansion with gpt-4o-mini: extra search queries, each a lower-weight vote.
-    expand_n: int = int(_env("EXPAND_N", "3"))  # 0 disables
+    expand_n: int = int(_env("EXPAND_N", "0"))  # 0 disables
     # total weight of all expansion votes together (the original question's lexical + dense votes weigh 2.0),
     # split evenly over them, so a misguided rewrite cannot outvote the question itself
     expand_weight: float = float(_env("EXPAND_WEIGHT", "1.0"))
@@ -62,10 +62,10 @@ class Settings:
     rrf_k: int = int(_env("RRF_K", "60"))
     seed_k: int = int(_env("SEED_K", "20"))          # top results that get neighbouring turns attached
     neighbour_window: int = int(_env("NEIGHBOUR_WINDOW", "1"))
-    time_weight: float = float(_env("TIME_WEIGHT", "1.0"))
-    recency_weight: float = float(_env("RECENCY_WEIGHT", "0.5"))  # present-state questions: newest relevant first
+    time_weight: float = float(_env("TIME_WEIGHT", "0"))
+    recency_weight: float = float(_env("RECENCY_WEIGHT", "0"))  # present-state questions: newest relevant first
     recency_depth: int = int(_env("RECENCY_DEPTH", "200"))
-    options_weight: float = float(_env("OPTIONS_WEIGHT", "0.25"))  # answer options (mostly distractors) as a vote
+    options_weight: float = float(_env("OPTIONS_WEIGHT", "0"))  # answer options (mostly distractors) as a vote
     # Result count: at most top_k; RESULT_LIMIT (0 = top_k) caps it lower for large memories. When the user's whole
     # memory fits, every exchange is returned (ranked ones first, the rest after, newest first).
     result_limit: int = int(_env("RESULT_LIMIT", "0"))

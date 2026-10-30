@@ -140,11 +140,14 @@ class Store:
         return h
 
     def image_description(self, h: str) -> Optional[str]:
-        """The description made with the current prompt version; None if missing or made with an older prompt."""
+        """The stored description (possibly from an older prompt version); None if the image was never described."""
+        row = self.db.execute("SELECT description FROM images WHERE hash=?", (h,)).fetchone()
+        return row[0] if row else None
+
+    def description_current(self, h: str) -> bool:
+        """Whether the image has a description from the current prompt version (or was refused: empty)."""
         row = self.db.execute("SELECT description, desc_version FROM images WHERE hash=?", (h,)).fetchone()
-        if row is None or row[0] is None or (row[0] != "" and row[1] != self.desc_version):
-            return None
-        return row[0]
+        return row is not None and row[0] is not None and (row[0] == "" or row[1] == self.desc_version)
 
     def set_image_description(self, h: str, description: str) -> None:
         with self.lock:

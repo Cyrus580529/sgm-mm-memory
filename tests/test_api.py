@@ -141,6 +141,7 @@ def model_client(tmp_path, monkeypatch):
     monkeypatch.setenv("EMB_API_KEY", "fake")
     monkeypatch.setenv("EMB_DIM", "16")
     monkeypatch.setenv("EMB_SPAN_CHARS", "50")
+    monkeypatch.setenv("EXPAND_N", "3")  # off by default; switched on here so its code path stays tested
     import app.config, app.main, app.models
     importlib.reload(app.config)
     importlib.reload(app.models)

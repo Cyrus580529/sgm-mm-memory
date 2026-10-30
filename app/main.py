@@ -183,7 +183,7 @@ async def describe_missing(store: Store, models: Models, jobs: list, strict: boo
         return
     todo = {}
     for h, ctx in jobs:
-        if h not in todo and await asyncio.to_thread(store.image_description, h) is None:
+        if h not in todo and not await asyncio.to_thread(store.description_current, h):
             todo[h] = ctx
 
     async def one(h, ctx):
