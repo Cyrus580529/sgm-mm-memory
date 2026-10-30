@@ -397,3 +397,16 @@ def test_corrupt_or_mislabelled_images(client):
     urls = [p["image_url"]["url"] for p in content if p["type"] == "image_url"]
     assert len(urls) == 1 and urls[0].startswith("data:image/png")          # real format, garbage not returned
     assert any("unreadable image" in p.get("text", "") for p in content)
+
+
+def test_arrangement_changes_order_not_membership():
+    from types import SimpleNamespace
+    from app.retrieval import arrange
+    U = lambda sid, ts, pos: SimpleNamespace(session_id=sid, ts=ts, pos=pos)
+    chosen = [(U("b", 300, 1), {"id": "1", "content": "b-late"}), (U("a", 100, 0), {"id": "2", "content": "a-early"}),
+              (U("b", 200, 0), {"id": "3", "content": "b-early"})]
+    assert [i["id"] for i in arrange(chosen, "relevance")] == ["1", "2", "3"]
+    assert [i["id"] for i in arrange(chosen, "chrono")] == ["2", "3", "1"]
+    sess = arrange(chosen, "session")
+    assert [i["id"] for i in sess] == ["3", "2"]                  # session b first (it holds the best hit)
+    assert sess[0]["content"].index("b-early") < sess[0]["content"].index("b-late")

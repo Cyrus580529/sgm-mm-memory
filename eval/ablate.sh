@@ -29,6 +29,8 @@ arm_env() {  # settings of each arm (plain function: macOS ships bash 3.2, which
     img0)    echo "MAX_IMAGES=0" ;;
     img8)    echo "MAX_IMAGES=8" ;;
     img2x768) echo "MAX_IMAGES=2 RETURN_IMAGE_SIDE=768" ;;
+    chrono)  echo "ARRANGEMENT=chrono" ;;
+    session) echo "ARRANGEMENT=session" ;;
   esac
 }
 ARMS="${ARMS:-base rerank expand time recency options full}"

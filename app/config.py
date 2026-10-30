@@ -76,6 +76,9 @@ class Settings:
     # text surrogate), downscaled to RETURN_IMAGE_SIDE. Under gpt-4o-mini's image pricing a 768 px image costs
     # ~25.5k of the Answer window's 117,760 input tokens, a 512 px one ~8.5k.
     max_images: int = int(_env("MAX_IMAGES", "4"))
+    # Order of the returned set (membership is decided by relevance and the token budget first): "relevance",
+    # "chrono" (oldest first) or "session" (one item per session, exchanges oldest first inside).
+    arrangement: str = _env("ARRANGEMENT", "relevance")
     return_image_side: int = int(_env("RETURN_IMAGE_SIDE", "512"))  # 512 px = one tile (~8.5k tokens)
     # The platform's Answer keeps only the prefix of our results that fits 117,760 input tokens (128k window minus
     # 8,192 output and 2,048 safety). We budget for it ourselves so the cut falls where we choose: images give way

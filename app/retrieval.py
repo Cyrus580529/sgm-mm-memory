@@ -581,10 +581,42 @@ def render(units: list, order: list, store: Store, s: Settings, budget: Optional
         used += cost
         img_bytes += item_bytes
         n_img += item_imgs
-        items.append(item)
+        items.append((u, item))
+    items = arrange(items, s.arrangement)
     for i, it in enumerate(items):  # scores follow the final order
         it["score"] = round(1.0 / (1 + i), 6)
     return items
+
+
+def arrange(chosen: list, mode: str) -> list:
+    """Order of the returned set; which memories are returned was already decided by relevance and budget.
+    relevance: as ranked. chrono: oldest first. session: one item per session, sessions in the order of their best
+    ranked exchange, the session's exchanges oldest first inside it."""
+    when = lambda u: (u.ts if u.ts is not None else 0, u.pos)
+    if mode == "chrono":
+        return [it for _, it in sorted(chosen, key=lambda x: when(x[0]))]
+    if mode != "session":
+        return [it for _, it in chosen]
+    groups = {}
+    for u, it in chosen:  # insertion order = rank of the session's best exchange
+        groups.setdefault(u.session_id, []).append((u, it))
+    out = []
+    for members in groups.values():
+        members.sort(key=lambda x: when(x[0]))
+        if len(members) == 1:
+            out.append(members[0][1])
+            continue
+        parts = []
+        for _, it in members:
+            c = it["content"]
+            parts.extend(c if isinstance(c, list) else [{"type": "text", "text": c}])
+        has_image = any(p["type"] == "image_url" for p in parts)
+        merged = {"id": members[0][1]["id"],
+                  "content": parts if has_image else "\n\n".join(p["text"] for p in parts)}
+        if "created_at" in members[0][1]:
+            merged["created_at"] = members[0][1]["created_at"]
+        out.append(merged)
+    return out
 
 
 RESPONSE_LIMIT = 29 * 1024 * 1024  # the contract allows 30 MiB per Search response
