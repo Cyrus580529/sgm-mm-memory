@@ -34,6 +34,25 @@ MEMLENS_ANSWER_SYSTEM = ("You are answering a question using memories retrieved 
                          "if they are insufficient, say so briefly. Respond concisely with the final answer.")
 
 
+def stratified(items: list, n_per_type: int, seed: int = 0) -> set:
+    """Question ids to answer: n per question type, spread over its subtypes in proportion (at least one each),
+    drawn with a fixed seed so every arm of an ablation answers the same questions."""
+    import random
+    rng = random.Random(seed)
+    by_type = collections.defaultdict(lambda: collections.defaultdict(list))
+    for it in items:
+        by_type[it["question_type"]][it.get("question_subtype") or ""].append(it["question_id"])
+    chosen = set()
+    for subs in by_type.values():
+        total = sum(len(v) for v in subs.values())
+        quota = {k: max(1, round(n_per_type * len(v) / total)) for k, v in subs.items()}
+        while sum(quota.values()) > n_per_type and max(quota.values()) > 1:
+            quota[max(quota, key=quota.get)] -= 1
+        for k, v in sorted(subs.items()):
+            chosen.update(rng.sample(sorted(v), min(quota[k], len(v))))
+    return chosen
+
+
 def lst(v):
     return v if isinstance(v, list) else ast.literal_eval(v) if isinstance(v, str) and v.strip() else []
 
@@ -73,6 +92,7 @@ def main():
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     items = json.load(open(os.path.join(args.data_dir, f"dataset_{args.split}.json")))[: args.limit or None]
+    chosen = stratified(items, args.answer) if args.answer else None
     img_root = os.path.join(args.data_dir, "img")
     stats = collections.defaultdict(lambda: collections.defaultdict(list))
     missing_img = 0
@@ -113,7 +133,7 @@ def main():
         for n, it in enumerate(items):
             if args.types and it["question_type"] not in args.types.split(","):
                 continue
-            if args.only_answered and args.answer and answered[it["question_type"]] >= args.answer:
+            if args.only_answered and chosen is not None and it["question_id"] not in chosen:
                 continue
             user = f"ml:{args.split}:{it['question_id']}"
             adds = []
@@ -157,7 +177,7 @@ def main():
                 q = f"Today is {it['question_date']}. {q}"
             res = c.post("/v1/memories/search", headers=H, json={"query": q, "user_id": user, "top_k": 100})
             assert res.status_code == 200, res.text
-            if args.answer and answered[it["question_type"]] < args.answer:
+            if chosen is not None and it["question_id"] in chosen:
                 answered[it["question_type"]] += 1
                 pending.append((it, res.json()["data"]))
                 if len(pending) >= 20:

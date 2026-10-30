@@ -136,6 +136,16 @@ def main():
     from eval.client import add_all
 
     files = sorted(glob.glob(os.path.join(args.data_dir, "dialog", args.glob)))
+    chosen = None
+    if args.answer:  # n questions per category, drawn across all files with a fixed seed (same set for every arm)
+        import random
+        pool = collections.defaultdict(list)
+        for fp in files[: args.files or None]:
+            for i, qa in enumerate(json.load(open(fp))["human-annotated QAs"]):
+                pool[point_label(qa)].append((os.path.basename(fp), i))
+        rng, chosen = random.Random(0), set()
+        for k in sorted(pool):
+            chosen.update(rng.sample(sorted(pool[k]), min(args.answer, len(pool[k]))))
     if args.files:
         files = files[: args.files]
     stats = collections.defaultdict(lambda: collections.defaultdict(list))
@@ -169,7 +179,7 @@ def main():
             add_all(c, H, adds)
             id2round = {str(rec.id): rec.request_id.split(":", 1)[1] for rec in store.user_records(user)}  # unit id = first record
 
-            for qa in d["human-annotated QAs"]:
+            for qi, qa in enumerate(d["human-annotated QAs"]):
                 clues = set(as_list(qa.get("clue")))
                 if not clues:
                     continue
@@ -192,8 +202,7 @@ def main():
                     got = len(clues & set(rounds[:k])) / len(clues)
                     stats[point_label(qa)][k].append(got)
                     stats["ALL"][k].append(got)
-                if args.answer and answered[str(qa["point"])] < args.answer:
-                    answered[str(qa["point"])] += 1
+                if chosen is not None and (os.path.basename(fp), qi) in chosen:
                     pending.append((qa, q, res.json()["data"], options, opts["answer"] if opts else None))
             if pending:  # answer per file so image payloads do not pile up in memory
                 if args.grader == "f1":
