@@ -64,7 +64,7 @@ def point_label(qa: dict) -> str:
     """Question category: Mem-Gallery's point code, or MemEye's capability cell "[['X4'], ['Y1']]" -> "X4/Y1"."""
     p = qa.get("point")
     try:
-        cells = as_list(p) if isinstance(p, str) and p.startswith("[") else None
+        cells = p if isinstance(p, list) else (as_list(p) if isinstance(p, str) and p.startswith("[") else None)
         if cells:
             return "/".join(x[0] if isinstance(x, list) and x else str(x) for x in cells)
     except Exception:
