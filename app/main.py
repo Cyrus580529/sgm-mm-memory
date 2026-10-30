@@ -264,7 +264,7 @@ async def rerank_lists(store: Store, models: Models, q_full: str, q_hashes: list
         image_query = q_image or text_query
         if image_query is None:
             return []
-        img_units = [k for k in cands if units[k].images][:40]
+        img_units = [k for k in cands if units[k].images][:40] if settings.rerank_images else []
 
         def build_docs():
             return ([{"text": retrieval.unit_text(units[k], store)[:3000] or " "} for k in cands],

@@ -125,6 +125,15 @@ class Models:
     async def rerank(self, query, documents: list, model: str) -> list:
         """(index, relevance score) of documents, most relevant first. query: str or {"image": data_uri};
         documents: list of {"text": ...} or {"image": data_uri}."""
+        if self.s.rerank_style == "jina":  # OpenAI-style gateways: text only
+            if not isinstance(query, str) or any("text" not in d for d in documents):
+                raise ModelRejected("this reranker API takes text only")
+            body = {"model": model, "query": query, "documents": [d["text"] for d in documents],
+                    "top_n": len(documents)}
+            async with self.rerank_sem:
+                out = await self._post(f"{self.s.rerank_base_url}/rerank", self.s.rerank_api_key, body, attempts=3)
+            res = sorted(out["results"], key=lambda r: -r["relevance_score"])
+            return [(r["index"], r["relevance_score"]) for r in res]
         body = {"model": model, "input": {"query": query, "documents": documents},
                 "parameters": {"top_n": len(documents), "return_documents": False, "instruct": DOC_INSTRUCT}}
         async with self.rerank_sem:

@@ -7,6 +7,11 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def _host(url: str) -> str:
+    from urllib.parse import urlparse
+    return urlparse(url).hostname or ""
+
+
 @dataclass(frozen=True)
 class Settings:
     memory_api_key: str = _env("MEMORY_API_KEY")
@@ -30,11 +35,14 @@ class Settings:
     emb_style: str = _env("EMB_STYLE", "dashscope")
     emb_span_chars: int = int(_env("EMB_SPAN_CHARS", "6000"))  # long texts are embedded in spans, scored by max
 
-    # Reranker (unrestricted by the Open-source Methods rules). Empty RERANK_API_KEY falls back to EMB_API_KEY.
+    # Reranker (unrestricted by the Open-source Methods rules). RERANK_STYLE "dashscope" = DashScope native API (text
+    # and image documents); "jina" = the common POST {base}/rerank API of OpenAI-style gateways (text only). The
+    # embedding key is reused only for a reranker on the same host, so a key never goes to another provider.
     rerank_base_url: str = _env("RERANK_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")
-    # the embedding key is reused only when it is a DashScope key; a key for another provider is never sent there
+    rerank_style: str = _env("RERANK_STYLE", "dashscope")
     rerank_api_key: str = _env("RERANK_API_KEY") or (
-        _env("EMB_API_KEY") if "dashscope" in _env("EMB_BASE_URL", "https://dashscope.aliyuncs.com/api/v1") else "")
+        _env("EMB_API_KEY") if _host(_env("RERANK_BASE_URL", "https://dashscope.aliyuncs.com/api/v1"))
+        == _host(_env("EMB_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")) else "")
     rerank_text_model: str = _env("RERANK_TEXT_MODEL", "qwen3-rerank")
     rerank_vl_model: str = _env("RERANK_VL_MODEL", "qwen3-vl-rerank")
     rerank_enabled_flag: str = _env("RERANK", "1")
@@ -94,6 +102,11 @@ class Settings:
     @property
     def rerank_enabled(self) -> bool:
         return bool(self.rerank_api_key) and self.rerank_enabled_flag == "1"
+
+    @property
+    def rerank_images(self) -> bool:
+        """Image documents need a multimodal reranker on the DashScope API."""
+        return self.rerank_enabled and self.rerank_style == "dashscope" and bool(self.rerank_vl_model)
 
 
 settings = Settings()
