@@ -5,6 +5,7 @@
 # it fits). Each other arm adds exactly one component to base; "full" is the current default configuration.
 # Image-budget arms vary only how many original images are returned and at what size (img0, img8, img2x768 vs full);
 # compare them against full: ARMS="full img0 img8 img2x768" BASE_ARM=full eval/ablate.sh OUT
+# Presentation arms (same membership rules, different order/grouping): chrono, session, sessionwide.
 # All arms share one state directory per dataset, so images are described and texts embedded only once; arms
 # differ only at Search time. Compare an arm with: python -m eval.compare OUT/base.answers.jsonl OUT/<arm>.answers.jsonl
 #
@@ -31,6 +32,7 @@ arm_env() {  # settings of each arm (plain function: macOS ships bash 3.2, which
     img2x768) echo "MAX_IMAGES=2 RETURN_IMAGE_SIDE=768" ;;
     chrono)  echo "ARRANGEMENT=chrono" ;;
     session) echo "ARRANGEMENT=session" ;;
+    sessionwide) echo "ARRANGEMENT=session SEED_K=10 NEIGHBOUR_WINDOW=20" ;;  # small-to-big: whole sessions of top hits
   esac
 }
 ARMS="${ARMS:-base rerank expand time recency options full}"
