@@ -77,8 +77,13 @@ class Settings:
     # ~25.5k of the Answer window's 117,760 input tokens, a 512 px one ~8.5k.
     max_images: int = int(_env("MAX_IMAGES", "4"))
     # Order of the returned set (membership is decided by relevance and the token budget first): "relevance",
-    # "chrono" (oldest first) or "session" (one item per session, exchanges oldest first inside).
+    # "sandwich" (best at both ends), "chrono" (oldest first) or "session" (one item per session, oldest first inside).
     arrangement: str = _env("ARRANGEMENT", "relevance")
+    image_match_bits: int = int(_env("IMAGE_MATCH_BITS", "6"))
+    # Beyond the first ASSISTANT_TRIM_AFTER results (0 = never), assistant replies are cut to ASSISTANT_TRIM_CHARS:
+    # the user's own words carry most facts, long generic replies mostly use up the Answer window.
+    assistant_trim_after: int = int(_env("ASSISTANT_TRIM_AFTER", "0"))
+    assistant_trim_chars: int = int(_env("ASSISTANT_TRIM_CHARS", "300"))  # dHash distance for "same picture" (0 = exact only)
     return_image_side: int = int(_env("RETURN_IMAGE_SIDE", "512"))  # 512 px = one tile (~8.5k tokens)
     # The platform's Answer keeps only the prefix of our results that fits 117,760 input tokens (128k window minus
     # 8,192 output and 2,048 safety). We budget for it ourselves so the cut falls where we choose: images give way

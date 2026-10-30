@@ -482,7 +482,7 @@ async def user_index(store: Store, user_id: str):
         idx = cache.get(user_id)
         if idx is None or len(idx.records) != n or user_id in state["dirty"]:
             state["dirty"].discard(user_id)
-            idx = await asyncio.to_thread(lambda: retrieval.UserIndex(store.user_records(user_id)))
+            idx = await asyncio.to_thread(lambda: retrieval.UserIndex(store.user_records(user_id), store))
             cache[user_id] = idx
             stats["index_builds"] += 1
         cache.move_to_end(user_id)
@@ -530,9 +530,12 @@ async def search(req: Request):
     base = retrieval.rrf(rankings, settings.rrf_k)
     rankings.append((settings.time_weight, retrieval.time_rank(q_text, units, base)))
     rankings.append((settings.recency_weight, retrieval.recency_rank(q_text, units, base, settings.recency_depth)))
-    if q_hashes:
+    if q_hashes:  # the question shows a picture the user shared before (exact or re-encoded copy)
+        q_dh = list((await asyncio.to_thread(store.image_dhashes, q_hashes)).values())
         hs = set(q_hashes)
-        rankings.append((2.0, [k for k, u in enumerate(units) if hs & u.images]))
+        exact = [k for k, u in enumerate(units) if hs & u.images]
+        near = cached.image_matches(q_dh, settings.image_match_bits) if q_dh else []
+        rankings.append((2.0, exact + [k for k in near if k not in set(exact)]))
     fused = retrieval.rrf(rankings, settings.rrf_k)
     if settings.rerank_enabled and fused:
         rankings.extend(await rerank_lists(store, models, q_full, q_hashes, units, fused[:settings.rerank_candidates]))

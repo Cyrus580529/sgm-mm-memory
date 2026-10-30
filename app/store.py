@@ -36,6 +36,22 @@ CREATE TABLE IF NOT EXISTS repair_queue (record_id INTEGER PRIMARY KEY, user_id 
 """
 
 
+def dhash(data: bytes) -> Optional[int]:
+    """64-bit difference hash: survives re-encoding, resizing and mild edits, so the same picture sent twice in
+    different files still matches (Hamming distance of a few bits). None if the bytes are not an image."""
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(data)).convert("L").resize((9, 8))
+        px = list(im.getdata())
+        bits = 0
+        for row in range(8):
+            for col in range(8):
+                bits = (bits << 1) | (px[row * 9 + col] > px[row * 9 + col + 1])
+        return bits
+    except Exception:
+        return None
+
+
 MAX_PIXELS = 64_000_000  # larger images are stored as sent, never decoded in full
 
 
@@ -99,6 +115,9 @@ class Store:
         if "desc_version" not in cols:  # databases from before description versioning
             self.db.execute("ALTER TABLE images ADD COLUMN desc_version TEXT")
             self.db.commit()
+        if "dhash" not in cols:
+            self.db.execute("ALTER TABLE images ADD COLUMN dhash TEXT")
+            self.db.commit()
         self.lock = threading.Lock()  # serialises writes; reads run concurrently on per-thread connections
 
     @property
@@ -134,10 +153,32 @@ class Store:
                 with open(path, "wb") as f:
                     f.write(small)
                 from .meta import image_meta
-                self.db.execute("INSERT INTO images(hash, mime, path, meta) VALUES (?,?,?,?)",
-                                (h, small_mime, path, json.dumps(image_meta(data))))
+                dh = dhash(data)
+                self.db.execute("INSERT INTO images(hash, mime, path, meta, dhash) VALUES (?,?,?,?,?)",
+                                (h, small_mime, path, json.dumps(image_meta(data)), None if dh is None else f"{dh:016x}"))
                 self.db.commit()
         return h
+
+    def image_dhashes(self, hashes: list) -> dict:
+        """hash -> 64-bit dHash for the given images (computed and stored on first use for older rows)."""
+        out = {}
+        for i in range(0, len(hashes), 500):
+            chunk = hashes[i:i + 500]
+            q = "SELECT hash, dhash, path FROM images WHERE hash IN (%s)" % ",".join("?" * len(chunk))
+            for h, dh, path in self.db.execute(q, chunk).fetchall():
+                if dh is None:
+                    try:
+                        v = dhash(open(path, "rb").read())
+                    except OSError:
+                        v = None
+                    if v is None:
+                        continue
+                    dh = f"{v:016x}"
+                    with self.lock:
+                        self.db.execute("UPDATE images SET dhash=? WHERE hash=?", (dh, h))
+                        self.db.commit()
+                out[h] = int(dh, 16)
+        return out
 
     def image_description(self, h: str) -> Optional[str]:
         """The stored description (possibly from an older prompt version); None if the image was never described."""

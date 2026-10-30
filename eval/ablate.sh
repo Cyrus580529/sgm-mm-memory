@@ -33,6 +33,8 @@ arm_env() {  # settings of each arm (plain function: macOS ships bash 3.2, which
     chrono)  echo "ARRANGEMENT=chrono" ;;
     session) echo "ARRANGEMENT=session" ;;
     sessionwide) echo "ARRANGEMENT=session SEED_K=10 NEIGHBOUR_WINDOW=20" ;;  # small-to-big: whole sessions of top hits
+    sandwich) echo "ARRANGEMENT=sandwich" ;;
+    trim)    echo "ASSISTANT_TRIM_AFTER=20" ;;   # long assistant replies cut beyond the top 20 results
   esac
 }
 ARMS="${ARMS:-base rerank expand time recency options full}"

@@ -407,6 +407,20 @@ def test_arrangement_changes_order_not_membership():
               (U("b", 200, 0), {"id": "3", "content": "b-early"})]
     assert [i["id"] for i in arrange(chosen, "relevance")] == ["1", "2", "3"]
     assert [i["id"] for i in arrange(chosen, "chrono")] == ["2", "3", "1"]
+    assert [i["id"] for i in arrange(chosen + [(U("c", 50, 0), {"id": "4", "content": "c"})], "sandwich")] == \
+        ["1", "3", "4", "2"]                                         # ranks 1,3 at the head, 4,2 at the tail
     sess = arrange(chosen, "session")
     assert [i["id"] for i in sess] == ["3", "2"]                  # session b first (it holds the best hit)
     assert sess[0]["content"].index("b-early") < sess[0]["content"].index("b-late")
+
+
+def test_assistant_trim_beyond_top_ranks(monkeypatch, client):
+    import app.main
+    object.__setattr__(app.main.settings, "assistant_trim_after", 1)
+    long_reply = "Here is a very long and generic piece of advice. " * 40
+    for i in range(3):
+        add(client, f"tr{i}", "u15", f"s{i}", [{"role": "user", "content": f"my kayak story {i}", "timestamp": 1700000000000 + i},
+                                              {"role": "assistant", "content": long_reply}])
+    data = search(client, "u15", "kayak").json()["data"]
+    assert len(data[0]["content"]) > 1500 and all(len(d["content"]) < 500 for d in data[1:])
+    object.__setattr__(app.main.settings, "assistant_trim_after", 0)

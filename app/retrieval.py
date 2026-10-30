@@ -92,11 +92,27 @@ def spans(text: str, size: int) -> list:
 class UserIndex:
     """Everything Search needs for one user, rebuilt only when the user's record count changes."""
 
-    def __init__(self, records: list):
+    def __init__(self, records: list, store=None):
         self.records = records
         self.units, self.unit_of = build_units(records)
         self.bm25 = BM25([u.index_text for u in self.units])
         self.dense = dense_matrix(records)
+        hashes = sorted({h for r in records for h in r.images})
+        self.dhash = store.image_dhashes(hashes) if store is not None and hashes else {}
+
+    def image_matches(self, query_dhashes: list, max_bits: int) -> list:
+        """Units holding a picture within max_bits of a query image (same picture, possibly re-encoded),
+        closest first."""
+        best = {}
+        for k, u in enumerate(self.units):
+            for h in u.images:
+                d = self.dhash.get(h)
+                if d is None:
+                    continue
+                dist = min(bin(d ^ q).count("1") for q in query_dhashes)
+                if dist <= max_bits:
+                    best[k] = min(best.get(k, 99), dist)
+        return sorted(best, key=lambda k: best[k])
 
 
 def rrf(rankings: list, k: int) -> list:
@@ -549,10 +565,13 @@ def render(units: list, order: list, store: Store, s: Settings, budget: Optional
         when = fmt_time(u.ts)
         parts = [{"type": "text", "text": f"[{when + ' | ' if when else ''}session {u.session_id}]"}]
         text_cost, pix_cost, item_bytes, item_imgs = 0, 0, 0, 0
+        trim = s.assistant_trim_after and len(items) >= s.assistant_trim_after
         for r in u.records:
             parts.append({"type": "text", "text": f"{r.role}:"})
             for kind, val in r.parts:
                 if kind == "text":
+                    if trim and r.role != "user" and len(val) > s.assistant_trim_chars:
+                        val = val[:s.assistant_trim_chars].rsplit(" ", 1)[0] + " ..."  # long replies past the top ranks
                     parts.append({"type": "text", "text": val})
                     continue
                 desc, meta = store.image_description(val), meta_text(store.image_meta(val))
@@ -590,9 +609,13 @@ def render(units: list, order: list, store: Store, s: Settings, budget: Optional
 
 def arrange(chosen: list, mode: str) -> list:
     """Order of the returned set; which memories are returned was already decided by relevance and budget.
-    relevance: as ranked. chrono: oldest first. session: one item per session, sessions in the order of their best
-    ranked exchange, the session's exchanges oldest first inside it."""
+    relevance: as ranked. sandwich: ranks 1,3,5,... first and ...,4,2 last, so the best memories sit at both ends of
+    a long context. chrono: oldest first. session: one item per session, sessions in the order of their best ranked
+    exchange, the session's exchanges oldest first inside it."""
     when = lambda u: (u.ts if u.ts is not None else 0, u.pos)
+    if mode == "sandwich":  # best at both ends, weakest in the middle (Liu et al., "Lost in the Middle")
+        ranked = [it for _, it in chosen]
+        return ranked[0::2] + ranked[1::2][::-1]
     if mode == "chrono":
         return [it for _, it in sorted(chosen, key=lambda x: when(x[0]))]
     if mode != "session":
