@@ -39,16 +39,25 @@ CREATE TABLE IF NOT EXISTS repair_queue (record_id INTEGER PRIMARY KEY, user_id 
 MAX_PIXELS = 64_000_000  # larger images are stored as sent, never decoded in full
 
 
+FORMATS = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "GIF": "image/gif"}
+UNREADABLE = "application/x-unreadable-image"  # stored, never sent to a model or returned as an image
+
+
 def compact_image(data: bytes, mime: str, max_side: int = 1024) -> tuple:
-    """(mime, bytes) of a downscaled JPEG copy; the original if it is already small or cannot be decoded."""
+    """(mime, bytes) of the copy used for descriptions and responses: a downscaled JPEG, or the original (with the
+    MIME type of its actual format) if it is already small. Bytes that do not decode as an image get UNREADABLE."""
     try:
         from PIL import Image, ImageOps
         im = Image.open(io.BytesIO(data))
+        actual = FORMATS.get(im.format)
+        if actual is None:
+            return UNREADABLE, data
         if im.width * im.height > MAX_PIXELS:
-            return mime, data
+            return actual, data
+        im.load()  # full decode: truncated or corrupt files fail here
         im = ImageOps.exif_transpose(im)
-        if max(im.size) <= max_side and len(data) <= 300_000:
-            return mime, data
+        if max(im.size) <= max_side and len(data) <= 300_000 and actual != "image/gif":
+            return actual, data
         im.thumbnail((max_side, max_side))
         if im.mode not in ("RGB", "L"):
             im = im.convert("RGB")
@@ -56,7 +65,7 @@ def compact_image(data: bytes, mime: str, max_side: int = 1024) -> tuple:
         im.save(buf, "JPEG", quality=85)
         return "image/jpeg", buf.getvalue()
     except Exception:
-        return mime, data
+        return UNREADABLE, data
 
 
 @dataclass
@@ -134,8 +143,9 @@ class Store:
             self.db.commit()
 
     def image_data_uri(self, h: str) -> Optional[tuple]:
+        """(data URI, byte size) of the compact copy; None if unknown or not a readable image."""
         row = self.db.execute("SELECT mime, path FROM images WHERE hash=?", (h,)).fetchone()
-        if row is None:
+        if row is None or row[0] == UNREADABLE:
             return None
         with open(row[1], "rb") as f:
             raw = f.read()

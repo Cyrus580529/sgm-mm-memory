@@ -188,6 +188,9 @@ async def describe_missing(store: Store, models: Models, jobs: list, strict: boo
 
     async def one(h, ctx):
         got = await asyncio.to_thread(store.image_data_uri, h)
+        if got is None:  # not a readable image: nothing to describe
+            await asyncio.to_thread(store.set_image_description, h, "")
+            return
         try:
             desc = await models.describe_image(got[0], ctx)
             stats["descriptions"] += 1
@@ -259,7 +262,8 @@ async def rerank_lists(store: Store, models: Models, q_full: str, q_hashes: list
     text), one over candidate images (queried with the question's own image when it has one, e.g. "what plant is
     this?", else with the text). Any failure only removes the vote."""
     try:
-        q_image = {"image": (await asyncio.to_thread(store.image_data_uri, q_hashes[0]))[0]} if q_hashes else None
+        q_got = await asyncio.to_thread(store.image_data_uri, q_hashes[0]) if q_hashes else None
+        q_image = {"image": q_got[0]} if q_got else None
         text_query = q_full[:2000] if q_full else None
         image_query = q_image or text_query
         if image_query is None:
@@ -267,10 +271,12 @@ async def rerank_lists(store: Store, models: Models, q_full: str, q_hashes: list
         img_units = [k for k in cands if units[k].images][:40] if settings.rerank_images else []
 
         def build_docs():
+            imgs = [(k, store.image_data_uri(retrieval.first_image(units[k]))) for k in img_units]
+            imgs = [(k, got) for k, got in imgs if got]
             return ([{"text": retrieval.unit_text(units[k], store)[:3000] or " "} for k in cands],
-                    [{"image": store.image_data_uri(retrieval.first_image(units[k]))[0]} for k in img_units])
+                    [k for k, _ in imgs], [{"image": got[0]} for _, got in imgs])
 
-        docs, idocs = await asyncio.to_thread(build_docs)
+        docs, img_units, idocs = await asyncio.to_thread(build_docs)
         jobs = [(cands, 0.0, models.rerank(text_query, docs, settings.rerank_text_model))] if text_query else []
         if img_units:
             jobs.append((img_units, settings.rerank_vl_min, models.rerank(image_query, idocs, settings.rerank_vl_model)))

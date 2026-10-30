@@ -545,7 +545,8 @@ def render(units: list, order: list, store: Store, s: Settings, budget: Optional
                     if meta or desc:
                         parts.append({"type": "text", "text": "(image " + "; ".join(x for x in (meta, desc) if x) + ")"})
                 else:
-                    parts.append({"type": "text", "text": "[image " + "; ".join(x for x in (meta, desc or "no description") if x) + "]"})
+                    shown = desc or ("unreadable image" if store.image_data_uri(val) is None else "no description")
+                    parts.append({"type": "text", "text": "[image " + "; ".join(x for x in (meta, shown) if x) + "]"})
         content = parts if has_image else "\n".join(p["text"] for p in parts)
         item = {"id": str(u.records[0].id), "content": content}
         if u.ts is not None:

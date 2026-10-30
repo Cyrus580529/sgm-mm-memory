@@ -363,3 +363,17 @@ def test_image_question_queries_image_reranker_with_the_image(model_client, monk
     search(c, "u13", [{"type": "text", "text": "What plant is shown in the picture?"},
                       {"type": "image_url", "image_url": {"url": png(140, 10, 140)}}])
     assert ("qwen3-vl-rerank", "image") in seen and ("qwen3-rerank", "text") in seen
+
+
+def test_corrupt_or_mislabelled_images(client):
+    garbage = "data:image/jpeg;base64," + base64.b64encode(b"definitely not an image" * 20).decode()
+    mislabelled = png(10, 10, 10).replace("data:image/png", "data:image/jpeg")   # PNG bytes declared as JPEG
+    r = add(client, "ci", "u14", "s1", [{"role": "user", "content": [
+        {"type": "text", "text": "two pictures of the harbour"},
+        {"type": "image_url", "image_url": {"url": garbage}},
+        {"type": "image_url", "image_url": {"url": mislabelled}}]}])
+    assert r.status_code == 200
+    content = search(client, "u14", "harbour").json()["data"][0]["content"]
+    urls = [p["image_url"]["url"] for p in content if p["type"] == "image_url"]
+    assert len(urls) == 1 and urls[0].startswith("data:image/png")          # real format, garbage not returned
+    assert any("unreadable image" in p.get("text", "") for p in content)
