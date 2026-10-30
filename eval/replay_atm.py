@@ -38,7 +38,7 @@ def main():
     ap.add_argument("--out", default="")
     args = ap.parse_args()
     os.environ["MEMORY_API_KEY"] = KEY
-    os.environ["MEMORY_DATA_DIR"] = tempfile.mkdtemp(prefix="atm_eval_")
+    os.environ["MEMORY_DATA_DIR"] = os.environ.get("EVAL_STATE_DIR") or tempfile.mkdtemp(prefix="atm_eval_")
     from fastapi.testclient import TestClient
     import app.main as svc
     logging.getLogger("httpx").setLevel(logging.WARNING)

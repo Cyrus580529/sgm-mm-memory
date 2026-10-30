@@ -60,6 +60,18 @@ def as_list(v):
         return []
 
 
+def point_label(qa: dict) -> str:
+    """Question category: Mem-Gallery's point code, or MemEye's capability cell "[['X4'], ['Y1']]" -> "X4/Y1"."""
+    p = qa.get("point")
+    try:
+        cells = as_list(p) if isinstance(p, str) and p.startswith("[") else None
+        if cells:
+            return "/".join(x[0] if isinstance(x, list) and x else str(x) for x in cells)
+    except Exception:
+        pass
+    return str(p)
+
+
 def grade_memeye(pending: list, ans_path: str, judge_dir: str) -> dict:
     """MemEye: MCQ by extracted letter, open questions by the official LLM judge."""
     import asyncio
@@ -93,11 +105,12 @@ def grade_memeye(pending: list, ans_path: str, judge_dir: str) -> dict:
         rows[k][2] = judge.parse(v)
     with open(ans_path, "a") as f:
         for qa, a, sc in rows:
-            pt = str(qa["point"])[:12]
+            pt = point_label(qa)
             scores[pt].append(sc)
             scores["ALL"].append(sc)
-            f.write(json.dumps({"q": qa["question"], "gold": qa["answer"], "pred": a, "score": sc},
-                               ensure_ascii=False) + "\n")
+            kind = "mcq" if isinstance(qa.get("options"), (list, str)) and qa.get("options") else "open"
+            f.write(json.dumps({"q": qa["question"], "type": f"{kind}:{point_label(qa)}", "gold": qa["answer"],
+                                "pred": a, "score": sc}, ensure_ascii=False) + "\n")
     return scores
 
 
@@ -116,7 +129,7 @@ def main():
 
     os.environ.setdefault("MEMORY_API_KEY", KEY)
     os.environ["MEMORY_API_KEY"] = KEY
-    os.environ["MEMORY_DATA_DIR"] = tempfile.mkdtemp(prefix="mg_eval_")
+    os.environ["MEMORY_DATA_DIR"] = os.environ.get("EVAL_STATE_DIR") or tempfile.mkdtemp(prefix="mg_eval_")
     from fastapi.testclient import TestClient
     logging.getLogger("httpx").setLevel(logging.WARNING)
     import app.main as svc
@@ -176,7 +189,7 @@ def main():
                 rounds = [id2round[it["id"]] for it in res.json()["data"]]
                 for k in (10, 30, 100):
                     got = len(clues & set(rounds[:k])) / len(clues)
-                    stats[str(qa["point"])[:12]][k].append(got)
+                    stats[point_label(qa)][k].append(got)
                     stats["ALL"][k].append(got)
                 if args.answer and answered[str(qa["point"])] < args.answer:
                     answered[str(qa["point"])] += 1
