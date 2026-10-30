@@ -39,8 +39,8 @@ run() {  # run <arm> <dataset tag> <command...>
 for arm in $ARMS; do
   for tag in $DATASETS; do
     case $tag in
-      memlens32k)  run "$arm" $tag $PY -m eval.replay_memlens _data/memlens --split 32k  --answer "$N" ;;
-      memlens256k) run "$arm" $tag $PY -m eval.replay_memlens _data/memlens --split 256k --answer "$N" --limit 400 ;;
+      memlens32k)  run "$arm" $tag $PY -m eval.replay_memlens _data/memlens --split 32k  --answer "$N" --only-answered ;;
+      memlens256k) run "$arm" $tag $PY -m eval.replay_memlens _data/memlens --split 256k --answer "${N256:-$N}" --only-answered ;;
       memeye)      run "$arm" $tag $PY -m eval.replay_memgallery _data/memeye/data --glob '[A-Z]*.json' --grader memeye --answer "$N" ;;
       mobilemem)   run "$arm" $tag $PY -m eval.replay_mobilemem _data/mobilemem --users 3 --answer "$N" ;;
     esac

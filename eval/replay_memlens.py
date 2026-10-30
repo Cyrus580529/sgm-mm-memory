@@ -62,6 +62,8 @@ def main():
     ap.add_argument("--dump", default="", help="jsonl with, per question, the rank of each gold session")
     ap.add_argument("--types", default="", help="comma-separated question types to run (default all)")
     ap.add_argument("--answer", type=int, default=0, help="answer and judge up to N questions per type")
+    ap.add_argument("--only-answered", action="store_true",
+                    help="with --answer, write and evaluate only the questions that will be answered (saves cost)")
     args = ap.parse_args()
     os.environ["MEMORY_API_KEY"] = KEY
     os.environ["MEMORY_DATA_DIR"] = os.environ.get("EVAL_STATE_DIR") or tempfile.mkdtemp(prefix="memlens_eval_")
@@ -110,6 +112,8 @@ def main():
             pending.clear()
         for n, it in enumerate(items):
             if args.types and it["question_type"] not in args.types.split(","):
+                continue
+            if args.only_answered and args.answer and answered[it["question_type"]] >= args.answer:
                 continue
             user = f"ml:{args.split}:{it['question_id']}"
             adds = []
