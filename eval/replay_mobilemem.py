@@ -91,6 +91,7 @@ def main():
     os.environ["MEMORY_DATA_DIR"] = os.environ.get("EVAL_STATE_DIR") or tempfile.mkdtemp(prefix="mobilemem_eval_")
     from fastapi.testclient import TestClient
     import app.main as svc
+    from eval.client import add_all
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     qfile = "filtered_questions.jsonl" if args.questions == "filtered" else "questions.jsonl"
@@ -106,6 +107,7 @@ def main():
     with TestClient(svc.app) as c:
         for row in rows:
             user = f"mm:{row['uuid']}"
+            adds = []
             for sess in P(row["sessions"]):
                 base = ms(sess["event_start_time"])
                 groups, cur = [], []
@@ -137,10 +139,9 @@ def main():
                         msgs.append({"role": t["role"], "content": content, "timestamp": base + k * 30_000})
                     if not msgs:
                         continue
-                    r = c.post("/v1/memories/add", headers=H, json={
-                        "request_id": f"{sess['session_id']}:{g}", "user_id": user,
-                        "session_id": sess["session_id"], "messages": msgs})
-                    assert r.status_code == 200, r.text
+                    adds.append({"request_id": f"{sess['session_id']}:{g}", "user_id": user,
+                                 "session_id": sess["session_id"], "messages": msgs})
+            add_all(c, H, adds)
             print(f"user {row['uuid']} written ({time.time() - t0:.0f}s)", file=sys.stderr)
 
             for qa in questions[row["uuid"]]:

@@ -53,11 +53,14 @@ class Models:
         self.emb_sem = asyncio.Semaphore(s.emb_concurrency)
         self.rerank_sem = asyncio.Semaphore(s.rerank_concurrency)  # Search runs up to 256-way concurrent
 
-    async def _post(self, url: str, key: str, body: dict, attempts: int = 6) -> dict:
+    async def _post(self, url: str, key: str, body: dict, attempts: int = 6, timeout: float = 30.0) -> dict:
+        """POST with bounded retries; a slow or unreachable provider fails fast (per-attempt timeout) rather than
+        holding a request for minutes."""
         delay = 2.0
         for attempt in range(attempts):
             try:
-                r = await self.client.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
+                r = await self.client.post(url, json=body, headers={"Authorization": f"Bearer {key}"},
+                                           timeout=httpx.Timeout(timeout, connect=10.0))
                 if r.status_code == 200:
                     return r.json()
                 if r.status_code not in (408, 409, 425, 429) and r.status_code < 500:
@@ -82,7 +85,7 @@ class Models:
             ]}],
         }
         async with self.llm_sem:
-            out = await self._post(f"{self.s.llm_base_url}/chat/completions", self.s.llm_api_key, body)
+            out = await self._post(f"{self.s.llm_base_url}/chat/completions", self.s.llm_api_key, body, timeout=90.0)
         return out["choices"][0]["message"]["content"].strip()
 
     async def expand_query(self, question: str, n: int) -> list:
@@ -90,7 +93,8 @@ class Models:
                 "response_format": {"type": "json_object"},
                 "messages": [{"role": "user", "content": EXPAND_PROMPT.format(n=n, question=question[:2000])}]}
         async with self.llm_sem:
-            out = await self._post(f"{self.s.llm_base_url}/chat/completions", self.s.llm_api_key, body, attempts=3)
+            out = await self._post(f"{self.s.llm_base_url}/chat/completions", self.s.llm_api_key, body, attempts=3,
+                                   timeout=30.0)
         try:
             qs = json.loads(out["choices"][0]["message"]["content"]).get("queries", [])
         except (ValueError, AttributeError):

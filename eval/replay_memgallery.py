@@ -133,6 +133,7 @@ def main():
     from fastapi.testclient import TestClient
     logging.getLogger("httpx").setLevel(logging.WARNING)
     import app.main as svc
+    from eval.client import add_all
 
     files = sorted(glob.glob(os.path.join(args.data_dir, "dialog", args.glob)))
     if args.files:
@@ -147,6 +148,7 @@ def main():
             stem = os.path.splitext(os.path.basename(fp))[0]
             d = json.load(open(fp))
             user = f"mg:{stem}"
+            adds = []
             for sess in d["multi_session_dialogues"]:
                 day = datetime.strptime(sess["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
                 for k, rd in enumerate(sess["dialogues"]):
@@ -162,10 +164,9 @@ def main():
                             parts.append({"type": "text", "text": f"caption: {caps[j]}"})
                     msgs = [{"role": "user", "content": parts if len(parts) > 1 else rd["user"], "timestamp": ts},
                             {"role": "assistant", "content": rd["assistant"] or "(no reply)", "timestamp": ts + 1}]
-                    r = c.post("/v1/memories/add", headers=H, json={
-                        "request_id": f"{stem}:{rd['round']}", "user_id": user,
-                        "session_id": f"{stem}:{sess['session_id']}", "messages": msgs})
-                    assert r.status_code == 200, r.text
+                    adds.append({"request_id": f"{stem}:{rd['round']}", "user_id": user,
+                                 "session_id": f"{stem}:{sess['session_id']}", "messages": msgs})
+            add_all(c, H, adds)
             id2round = {str(rec.id): rec.request_id.split(":", 1)[1] for rec in store.user_records(user)}  # unit id = first record
 
             for qa in d["human-annotated QAs"]:

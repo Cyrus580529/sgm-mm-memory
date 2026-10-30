@@ -67,6 +67,7 @@ def main():
     os.environ["MEMORY_DATA_DIR"] = os.environ.get("EVAL_STATE_DIR") or tempfile.mkdtemp(prefix="memlens_eval_")
     from fastapi.testclient import TestClient
     import app.main as svc
+    from eval.client import add_all
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     items = json.load(open(os.path.join(args.data_dir, f"dataset_{args.split}.json")))[: args.limit or None]
@@ -111,6 +112,7 @@ def main():
             if args.types and it["question_type"] not in args.types.split(","):
                 continue
             user = f"ml:{args.split}:{it['question_id']}"
+            adds = []
             sids, dates = lst(it["haystack_session_ids"]), lst(it["haystack_dates"])
             for sid, date, sess in zip(sids, dates, it["haystack_sessions"]):
                 base_ts = ms(date)
@@ -142,10 +144,9 @@ def main():
                             msgs.append({"role": t["role"], "content": parts, "timestamp": base_ts + g * 60_000 + j})
                     if not msgs:
                         continue
-                    r = c.post("/v1/memories/add", headers=H, json={
-                        "request_id": f"{it['question_id']}:{sid}:{g}", "user_id": user, "session_id": sid,
-                        "messages": msgs})
-                    assert r.status_code == 200, r.text
+                    adds.append({"request_id": f"{it['question_id']}:{sid}:{g}", "user_id": user, "session_id": sid,
+                                 "messages": msgs})
+            add_all(c, H, adds)
             gold = set(lst(it["answer_session_ids"]))
             q = it["question"]
             if args.with_date:
