@@ -58,8 +58,12 @@ def main():
         print("EMB_API_KEY not set")
     else:
         base = env("EMB_BASE_URL", "https://dashscope.aliyuncs.com/api/v1").rstrip("/")
-        roots = {base, "https://dashscope.aliyuncs.com/api/v1"}
-        for root in sorted(roots):
+        # only the configured provider is contacted: a key is never sent to a host it was not issued for
+        dashscope = "dashscope" in base
+        native = {base} if dashscope else set()
+        if dashscope:
+            native.add("https://dashscope.aliyuncs.com/api/v1")
+        for root in sorted(native):
             st, out, dt = call(f"{root}/services/embeddings/text-embedding/text-embedding", emb_key, {
                 "model": "text-embedding-v4", "input": {"texts": ["hello"]},
                 "parameters": {"text_type": "query", "dimension": 1024}})
@@ -68,7 +72,8 @@ def main():
                    f"dim={len(out['output']['embeddings'][0]['embedding'])}" if ok else f"{st} {str(out)[:120]}")
             if ok:
                 print(f"       -> EMB_STYLE=dashscope EMB_BASE_URL={root}")
-        for root in sorted({base, "https://dashscope.aliyuncs.com/compatible-mode/v1"}):
+        compat = {base} | ({"https://dashscope.aliyuncs.com/compatible-mode/v1"} if dashscope else set())
+        for root in sorted(compat):
             st, out, dt = call(f"{root}/embeddings", emb_key, {"model": "text-embedding-v4", "input": ["hello"],
                                                               "dimensions": 1024, "encoding_format": "float"})
             ok = st == 200 and "data" in out
@@ -77,8 +82,10 @@ def main():
             if ok:
                 print(f"       -> EMB_STYLE=openai EMB_BASE_URL={root}")
 
-    rk_key = env("RERANK_API_KEY") or emb_key
-    if rk_key:
+    rk_key = env("RERANK_API_KEY") or (emb_key if "dashscope" in env("EMB_BASE_URL", "dashscope") else None)
+    if not rk_key:
+        print("rerank: no RERANK_API_KEY (and the embedding key is not a DashScope key) -> reranking off")
+    else:
         root = env("RERANK_BASE_URL", "https://dashscope.aliyuncs.com/api/v1").rstrip("/")
         url = f"{root}/services/rerank/text-rerank/text-rerank"
         st, out, dt = call(url, rk_key, {"model": env("RERANK_TEXT_MODEL", "qwen3-rerank"),

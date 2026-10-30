@@ -32,7 +32,9 @@ class Settings:
 
     # Reranker (unrestricted by the Open-source Methods rules). Empty RERANK_API_KEY falls back to EMB_API_KEY.
     rerank_base_url: str = _env("RERANK_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")
-    rerank_api_key: str = _env("RERANK_API_KEY") or _env("EMB_API_KEY")
+    # the embedding key is reused only when it is a DashScope key; a key for another provider is never sent there
+    rerank_api_key: str = _env("RERANK_API_KEY") or (
+        _env("EMB_API_KEY") if "dashscope" in _env("EMB_BASE_URL", "https://dashscope.aliyuncs.com/api/v1") else "")
     rerank_text_model: str = _env("RERANK_TEXT_MODEL", "qwen3-rerank")
     rerank_vl_model: str = _env("RERANK_VL_MODEL", "qwen3-vl-rerank")
     rerank_enabled_flag: str = _env("RERANK", "1")
