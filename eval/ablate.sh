@@ -11,6 +11,7 @@
 #
 # usage: eval/ablate.sh OUT_DIR [N_PER_TYPE]      (needs model keys in the environment, e.g. from .env)
 #        ARMS="base full" DATASETS="memlens256k" eval/ablate.sh OUT 10     (a subset)
+#        STATE_ROOT=OTHER/state reuses another run's written memories and descriptions
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT=${1:?output dir}; N=${2:-20}
@@ -43,7 +44,7 @@ DATASETS="${DATASETS:-memlens32k memlens256k memeye mobilemem}"
 run() {  # run <arm> <dataset tag> <command...>
   local arm=$1 tag=$2; shift 2
   echo "== $tag / $arm"
-  env $(arm_env "$arm") EVAL_STATE_DIR="$OUT/state/$tag" "$@" --out "$OUT/$tag.$arm.json" 2>>"$OUT/$tag.$arm.log" \
+  env $(arm_env "$arm") EVAL_STATE_DIR="${STATE_ROOT:-$OUT/state}/$tag" "$@" --out "$OUT/$tag.$arm.json" 2>>"$OUT/$tag.$arm.log" \
     | grep -E "^answer|^ALL|judge|score=" || true
 }
 
