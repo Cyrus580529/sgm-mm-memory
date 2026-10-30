@@ -20,7 +20,9 @@ that would tell this image apart from similar ones. Write "none" for a field tha
 Scene: where it is and what kind of image it is (photo, phone screenshot of which app, slide, chart, document,
 receipt, artwork ...)
 Objects: the main objects, each with colour, count, material, brand and distinctive attributes
-People: people or animals present, their appearance, clothing and what they are doing
+People: people or animals present, with clothing colours, appearance and what they are doing
+Layout: where things are relative to each other (left/right/top/bottom/centre, in front of, next to, above, below),
+so that questions like "what is to the right of X" or "which side is Y on" can be answered without the image
 Text: every piece of readable text in the image, verbatim and in its original language (titles, signs, labels,
 prices, numbers, app names, chat messages and timestamps in screenshots, slide text)
 Event: what is happening or what the image is about
@@ -33,6 +35,8 @@ the evidence would contain: the key people, objects, places, events and exact te
 describe what the picture would show. Do not answer the question and do not add facts that are not implied by it.
 Return JSON: {{"queries": ["...", "..."]}}
 Question: {question}"""
+
+DESC_VERSION = "v2-layout"  # bump when SCHEMA_PROMPT changes: older stored descriptions are then redone
 
 DOC_INSTRUCT = "Given a question about a person's past conversations, photos and documents, retrieve the memory that helps answer it."
 

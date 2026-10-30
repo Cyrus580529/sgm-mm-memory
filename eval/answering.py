@@ -101,8 +101,10 @@ def answer_all(pending: list, out_path: str) -> dict:
 
 
 # ---- generic helpers (used by the MemLens / MemEye / MobileMem replays) -------------------------------------
-def items_to_parts(items: list, detail: str = "low") -> list:
-    """Search result items -> chat content parts, in returned order (as the platform passes them to Answer)."""
+def items_to_parts(items: list, detail: str = "") -> list:
+    """Search result items -> chat content parts, in returned order (as the platform passes them to Answer).
+    Images go without a detail setting (the model's default, "auto") unless ANSWER_IMAGE_DETAIL says otherwise."""
+    detail = detail or os.environ.get("ANSWER_IMAGE_DETAIL", "")
     parts = []
     for i, it in enumerate(items, 1):
         parts.append({"type": "text", "text": f"\n[Memory {i}]"})
@@ -112,7 +114,10 @@ def items_to_parts(items: list, detail: str = "low") -> list:
             continue
         for p in c:
             if p["type"] == "image_url":
-                parts.append({"type": "image_url", "image_url": {"url": p["image_url"]["url"], "detail": detail}})
+                iu = {"url": p["image_url"]["url"]}
+                if detail:
+                    iu["detail"] = detail
+                parts.append({"type": "image_url", "image_url": iu})
             else:
                 parts.append(p)
     return parts

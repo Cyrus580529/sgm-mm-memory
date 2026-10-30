@@ -72,13 +72,17 @@ class Settings:
     return_all_if_fits: bool = _env("RETURN_ALL_IF_FITS", "1") == "1"  # RRF weight of the "dated inside the asked period" list
     # raw image bytes per Search response; base64 adds 4/3, so 18 MiB stays under the 30 MiB response cap
     max_images_bytes: int = int(_env("MAX_IMAGES_BYTES", str(18 * 1024 * 1024)))
-    max_images: int = int(_env("MAX_IMAGES", "40"))
+    # Original images returned per Search: pixels only for the best-ranked image-bearing items (the rest carry their
+    # text surrogate), downscaled to RETURN_IMAGE_SIDE. Under gpt-4o-mini's image pricing a 768 px image costs
+    # ~25.5k of the Answer window's 117,760 input tokens, a 512 px one ~8.5k.
+    max_images: int = int(_env("MAX_IMAGES", "4"))
+    return_image_side: int = int(_env("RETURN_IMAGE_SIDE", "512"))  # 512 px = one tile (~8.5k tokens)
     # The platform's Answer keeps only the prefix of our results that fits 117,760 input tokens (128k window minus
     # 8,192 output and 2,048 safety). We budget for it ourselves so the cut falls where we choose: images give way
-    # to their descriptions first, then items that do not fit are skipped. 1,024 tokens for instructions, 15% for
-    # tokenizer differences; an image is counted as IMAGE_TOKENS (depends on the unknown Answer model).
+    # to their text surrogates first, then items that do not fit are skipped. 1,024 tokens for instructions, 15% for
+    # tokenizer differences; images are priced as gpt-4o-mini prices them (the assumed Answer model).
     answer_window: int = int(_env("ANSWER_INPUT_TOKENS", "117760"))
-    image_tokens: int = int(_env("IMAGE_TOKENS", "1100"))
+    image_detail_low: bool = _env("ANSWER_IMAGE_DETAIL", "auto") == "low"  # how the Answer model is assumed to view images
     index_cache_records: int = int(_env("INDEX_CACHE_RECORDS", "300000"))  # in-memory search indexes, all users
 
     # Provider outages during Add: answer 503 (Retry-After seconds) up to ADD_MAX_DEFERS times per request, then

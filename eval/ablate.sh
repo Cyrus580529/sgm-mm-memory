@@ -3,6 +3,8 @@
 #
 # base = verbatim text and images + image descriptions + BM25 + dense + neighbouring exchanges (+ whole memory when
 # it fits). Each other arm adds exactly one component to base; "full" is the current default configuration.
+# Image-budget arms vary only how many original images are returned and at what size (img0, img8, img2x768 vs full);
+# compare them against full: ARMS="full img0 img8 img2x768" BASE_ARM=full eval/ablate.sh OUT
 # All arms share one state directory per dataset, so images are described and texts embedded only once; arms
 # differ only at Search time. Compare an arm with: python -m eval.compare OUT/base.answers.jsonl OUT/<arm>.answers.jsonl
 #
@@ -24,6 +26,9 @@ arm_env() {  # settings of each arm (plain function: macOS ships bash 3.2, which
     recency) echo "$BASE RECENCY_WEIGHT=0.5" ;;
     options) echo "$BASE OPTIONS_WEIGHT=0.25" ;;
     full)    echo "" ;;
+    img0)    echo "MAX_IMAGES=0" ;;
+    img8)    echo "MAX_IMAGES=8" ;;
+    img2x768) echo "MAX_IMAGES=2 RETURN_IMAGE_SIDE=768" ;;
   esac
 }
 ARMS="${ARMS:-base rerank expand time recency options full}"
@@ -47,11 +52,11 @@ for arm in $ARMS; do
   done
 done
 
-echo; echo "paired comparisons against base:"
+echo; echo "paired comparisons against ${BASE_ARM:-base}:"
 for tag in $DATASETS; do
   for arm in $ARMS; do
-    [ "$arm" = base ] && continue
-    echo "--- $tag: $arm vs base"
-    $PY -m eval.compare "$OUT/$tag.base.answers.jsonl" "$OUT/$tag.$arm.answers.jsonl" || true
+    [ "$arm" = "${BASE_ARM:-base}" ] && continue
+    echo "--- $tag: $arm vs ${BASE_ARM:-base}"
+    $PY -m eval.compare "$OUT/$tag.${BASE_ARM:-base}.answers.jsonl" "$OUT/$tag.$arm.answers.jsonl" || true
   done
 done

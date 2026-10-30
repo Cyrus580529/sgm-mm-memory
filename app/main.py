@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from . import retrieval
 from .config import check_competition_models, settings
 from .meta import meta_text
-from .models import ModelRejected, ModelUnavailable, Models
+from .models import DESC_VERSION, ModelRejected, ModelUnavailable, Models
 from .store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -66,7 +66,7 @@ async def lifespan(_: FastAPI):
     check_competition_models(settings)
     if not settings.memory_api_key:
         raise RuntimeError("MEMORY_API_KEY is not set")
-    state["store"] = Store(settings.data_dir, settings.emb_dim)
+    state["store"] = Store(settings.data_dir, settings.emb_dim, DESC_VERSION)
     state["models"] = Models(settings)
     state["add_locks"] = {}
     state["defers"] = Counter()          # 503s already given per request_id

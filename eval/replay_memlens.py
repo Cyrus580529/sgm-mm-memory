@@ -194,7 +194,7 @@ def main():
             stats["_units"]["n"].append(len(idx.units))
             from app.retrieval import item_tokens
             stats["_returned"]["n"].append(len(got))
-            stats["_returned"]["tok"].append(sum(item_tokens(x, svc.settings.image_tokens) for x in res.json()["data"]))
+            stats["_returned"]["tok"].append(sum(item_tokens(x, svc.settings.image_detail_low) for x in res.json()["data"]))
             if dump:
                 first = {}
                 for r, sid in enumerate(got):

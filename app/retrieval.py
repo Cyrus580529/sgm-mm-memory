@@ -1,4 +1,5 @@
 """Hybrid retrieval (BM25 + dense + exact image match, fused by RRF) and response assembly."""
+import io
 import json
 import math
 import re
@@ -498,11 +499,32 @@ def est_tokens(text: str) -> int:
     return cjk + int((len(text) - cjk) / 3.6) + 1
 
 
-def item_tokens(item: dict, image_tokens: int) -> int:
+def image_tokens(width: int, height: int, low: bool = False) -> int:
+    """gpt-4o-mini's price of one image: 2,833 tokens, plus 5,667 per 512 px tile at high detail after fitting the
+    image into 2048 x 2048 and scaling its short side down to 768."""
+    if low:
+        return 2833
+    w, h = float(width), float(height)
+    if max(w, h) > 2048:
+        w, h = w * 2048 / max(w, h), h * 2048 / max(w, h)
+    if min(w, h) > 768:
+        w, h = w * 768 / min(w, h), h * 768 / min(w, h)
+    return 2833 + 5667 * math.ceil(w / 512) * math.ceil(h / 512)
+
+
+def data_uri_size(uri: str) -> tuple:
+    from PIL import Image
+    import base64
+    return Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).size
+
+
+def item_tokens(item: dict, low: bool = False) -> int:
+    """Answer-window cost of one result item (text estimate plus gpt-4o-mini image pricing)."""
     c = item["content"]
     if isinstance(c, str):
         return est_tokens(c) + 20
-    return sum(image_tokens if p["type"] == "image_url" else est_tokens(p.get("text", "")) for p in c) + 20
+    return sum(image_tokens(*data_uri_size(p["image_url"]["url"]), low) if p["type"] == "image_url"
+               else est_tokens(p.get("text", "")) for p in c) + 20
 
 
 def without_images(item: dict) -> dict:
@@ -517,16 +539,16 @@ def answer_budget(s: Settings, query_text: str, options_text: str) -> int:
 
 
 def render(units: list, order: list, store: Store, s: Settings, budget: Optional[int] = None) -> list:
-    """Search response items in rank order. Original images are attached while the image allowance lasts (after
-    that the image's description stands in). With a token budget, an item that does not fit is sent without its
-    images if that fits, else skipped, so the platform's prefix cut never drops a better-ranked memory."""
-    items, img_bytes, n_img = [], 0, 0
-    used = 0
+    """Search response items in rank order. Every image is accompanied by its text surrogate (capture metadata and
+    description); the pixels themselves go only with the best-ranked images, up to MAX_IMAGES, downscaled to
+    RETURN_IMAGE_SIDE. With a token budget, an item that does not fit gives up its pixels and, if it still does not
+    fit, is skipped, so the platform's prefix cut never drops a better-ranked memory."""
+    items, img_bytes, n_img, used = [], 0, 0, 0
     for k in order:
         u: Unit = units[k]
         when = fmt_time(u.ts)
-        item_bytes = item_imgs = 0  # this item's share of the image allowance, returned if its images are dropped
-        parts, has_image = [{"type": "text", "text": f"[{when + ' | ' if when else ''}session {u.session_id}]"}], False
+        parts = [{"type": "text", "text": f"[{when + ' | ' if when else ''}session {u.session_id}]"}]
+        text_cost, pix_cost, item_bytes, item_imgs = 0, 0, 0, 0
         for r in u.records:
             parts.append({"type": "text", "text": f"{r.role}:"})
             for kind, val in r.parts:
@@ -534,32 +556,31 @@ def render(units: list, order: list, store: Store, s: Settings, budget: Optional
                     parts.append({"type": "text", "text": val})
                     continue
                 desc, meta = store.image_description(val), meta_text(store.image_meta(val))
-                got = store.image_data_uri(val) if n_img < s.max_images else None
-                if got and img_bytes + got[1] <= s.max_images_bytes:
+                got = store.image_for_answer(val, s.return_image_side) if n_img + item_imgs < s.max_images else None
+                if got and img_bytes + item_bytes + got[1] <= s.max_images_bytes:
                     parts.append({"type": "image_url", "image_url": {"url": got[0]}})
-                    img_bytes += got[1]
-                    n_img += 1
+                    pix_cost += image_tokens(*got[2], s.image_detail_low)
                     item_bytes += got[1]
                     item_imgs += 1
-                    has_image = True
                     if meta or desc:
                         parts.append({"type": "text", "text": "(image " + "; ".join(x for x in (meta, desc) if x) + ")"})
                 else:
                     shown = desc or ("unreadable image" if store.image_data_uri(val) is None else "no description")
                     parts.append({"type": "text", "text": "[image " + "; ".join(x for x in (meta, shown) if x) + "]"})
-        content = parts if has_image else "\n".join(p["text"] for p in parts)
-        item = {"id": str(u.records[0].id), "content": content}
+        text_cost = sum(est_tokens(p["text"]) for p in parts if p["type"] == "text") + 20
+        has_image = item_imgs > 0
+        item = {"id": str(u.records[0].id),
+                "content": parts if has_image else "\n".join(p["text"] for p in parts)}
         if u.ts is not None:
             item["created_at"] = datetime.fromtimestamp(u.ts / 1000, tz=timezone.utc).isoformat()
-        if budget is not None:
-            cost = item_tokens(item, s.image_tokens)
-            if used + cost > budget and has_image:
-                item = without_images(item)
-                img_bytes, n_img = img_bytes - item_bytes, n_img - item_imgs
-                cost = item_tokens(item, s.image_tokens)
-            if used + cost > budget:
-                continue
-            used += cost
+        cost = text_cost + pix_cost
+        if budget is not None and used + cost > budget and has_image:
+            item, cost, item_bytes, item_imgs = without_images(item), text_cost, 0, 0
+        if budget is not None and used + cost > budget:
+            continue
+        used += cost
+        img_bytes += item_bytes
+        n_img += item_imgs
         items.append(item)
     for i, it in enumerate(items):  # scores follow the final order
         it["score"] = round(1.0 / (1 + i), 6)

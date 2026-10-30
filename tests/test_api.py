@@ -322,23 +322,42 @@ def test_search_skips_unusable_query_parts(client):
 def test_answer_token_budget():
     from types import SimpleNamespace
     from app.config import Settings
-    from app.retrieval import Unit, est_tokens, render
+    from app.retrieval import Unit, est_tokens, image_tokens, render
     rec = lambda i, text, imgs=(): SimpleNamespace(id=i, ts=1717000000000 + i, event_ts=None, role="user",
                                                    session_id="s", request_id=f"r{i}", msg_index=0, text=text,
                                                    images=list(imgs), parts=[["text", text]] + [["image", h] for h in imgs])
     store = SimpleNamespace(image_description=lambda h: "a red mug", image_meta=lambda h: None,
-                            image_data_uri=lambda h: ("data:image/png;base64,AAAA", 3))
+                            image_data_uri=lambda h: ("data:image/png;base64,AAAA", 3),
+                            image_for_answer=lambda h, side: ("data:image/png;base64,AAAA", 3, (512, 512)))
     units = [Unit([rec(1, "short note")], "s", 0), Unit([rec(2, "word " * 4000)], "s", 1),
              Unit([rec(3, "photo of the mug", ["h1"])], "s", 2), Unit([rec(4, "another short note")], "s", 3)]
     s = Settings()
-    object.__setattr__(s, "image_tokens", 1000)
-    out = render(units, [0, 1, 2, 3], store, s, budget=900)
-    ids = [it["id"] for it in out]
-    assert ids == ["1", "3", "4"]                        # the oversized item is skipped, later ones still fit
-    assert isinstance(out[1]["content"], str) and "red mug" in out[1]["content"]   # image gave way to its description
+    assert image_tokens(512, 512) == 8500 and image_tokens(1024, 768) == 25501
+    out = render(units, [0, 1, 2, 3], store, s, budget=5000)
+    assert [it["id"] for it in out] == ["1", "3", "4"]     # oversized item skipped, later ones still fit
+    assert isinstance(out[1]["content"], str) and "red mug" in out[1]["content"]   # 8.5k image gave way to text
+    out = render(units, [2, 0], store, s, budget=20000)
+    assert isinstance(out[0]["content"], list)               # with room, the best-ranked image keeps its pixels
     assert [it["score"] for it in out] == sorted([it["score"] for it in out], reverse=True)
     assert est_tokens("你好世界") >= 4 and est_tokens("hello world") >= 3
 
+
+def test_only_top_images_carry_pixels():
+    from types import SimpleNamespace
+    from app.config import Settings
+    from app.retrieval import Unit, render
+    rec = lambda i: SimpleNamespace(id=i, ts=1717000000000 + i, event_ts=None, role="user", session_id="s",
+                                    request_id=f"r{i}", msg_index=0, text=f"photo {i}", images=[f"h{i}"],
+                                    parts=[["text", f"photo {i}"], ["image", f"h{i}"]])
+    store = SimpleNamespace(image_description=lambda h: f"desc {h}", image_meta=lambda h: None,
+                            image_data_uri=lambda h: ("data:image/png;base64,AAAA", 3),
+                            image_for_answer=lambda h, side: ("data:image/png;base64,AAAA", 3, (512, 512)))
+    s = Settings()
+    object.__setattr__(s, "max_images", 2)
+    out = render([Unit([rec(i)], "s", i) for i in range(5)], list(range(5)), store, s, budget=10 ** 6)
+    with_pixels = [isinstance(it["content"], list) for it in out]
+    assert with_pixels == [True, True, False, False, False]
+    assert all("desc h" in (it["content"] if isinstance(it["content"], str) else str(it["content"])) for it in out)
 
 def test_out_of_order_adds_follow_request_ordinal(client):
     # chunk-2 arrives before chunk-1, no timestamps: the request ordinal restores the order

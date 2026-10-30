@@ -4,3 +4,5 @@ _data/
 __pycache__/
 .venv/
 artifacts/
+/_data
+/.venv

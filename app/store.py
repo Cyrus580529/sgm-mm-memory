@@ -85,14 +85,20 @@ class Record:
 
 
 class Store:
-    def __init__(self, data_dir: str, emb_dim: int = 1024):
+    def __init__(self, data_dir: str, emb_dim: int = 1024, desc_version: str = ""):
         self.emb_dim = emb_dim
+        self.desc_version = desc_version
+        self._answer_cache = {}
         os.makedirs(os.path.join(data_dir, "images"), exist_ok=True)
         self.data_dir = data_dir
         self.path = os.path.join(data_dir, "memory.db")
         self._local = threading.local()
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(images)")}
+        if "desc_version" not in cols:  # databases from before description versioning
+            self.db.execute("ALTER TABLE images ADD COLUMN desc_version TEXT")
+            self.db.commit()
         self.lock = threading.Lock()  # serialises writes; reads run concurrently on per-thread connections
 
     @property
@@ -134,13 +140,47 @@ class Store:
         return h
 
     def image_description(self, h: str) -> Optional[str]:
-        row = self.db.execute("SELECT description FROM images WHERE hash=?", (h,)).fetchone()
-        return row[0] if row else None
+        """The description made with the current prompt version; None if missing or made with an older prompt."""
+        row = self.db.execute("SELECT description, desc_version FROM images WHERE hash=?", (h,)).fetchone()
+        if row is None or row[0] is None or (row[0] != "" and row[1] != self.desc_version):
+            return None
+        return row[0]
 
     def set_image_description(self, h: str, description: str) -> None:
         with self.lock:
-            self.db.execute("UPDATE images SET description=? WHERE hash=?", (description, h))
+            self.db.execute("UPDATE images SET description=?, desc_version=? WHERE hash=?",
+                            (description, self.desc_version, h))
             self.db.commit()
+
+    def image_for_answer(self, h: str, max_side: int) -> Optional[tuple]:
+        """(data URI, byte size, (width, height)) of the copy sent to the Answer model: the compact copy, further
+        downscaled so its long side is at most max_side (cached). None if not a readable image."""
+        key = (h, max_side)
+        hit = self._answer_cache.get(key)
+        if hit is not None:
+            return hit
+        row = self.db.execute("SELECT mime, path FROM images WHERE hash=?", (h,)).fetchone()
+        if row is None or row[0] == UNREADABLE:
+            return None
+        from PIL import Image
+        raw, mime = open(row[1], "rb").read(), row[0]
+        try:
+            im = Image.open(io.BytesIO(raw))
+            size = im.size
+            if max(size) > max_side:
+                im.thumbnail((max_side, max_side))
+                if im.mode not in ("RGB", "L"):
+                    im = im.convert("RGB")
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=85)
+                raw, mime, size = buf.getvalue(), "image/jpeg", im.size
+        except Exception:
+            return None
+        out = (f"data:{mime};base64," + base64.b64encode(raw).decode(), len(raw), size)
+        if len(self._answer_cache) > 2000:
+            self._answer_cache.clear()
+        self._answer_cache[key] = out
+        return out
 
     def image_data_uri(self, h: str) -> Optional[tuple]:
         """(data URI, byte size) of the compact copy; None if unknown or not a readable image."""
