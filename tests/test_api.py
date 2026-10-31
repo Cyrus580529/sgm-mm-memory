@@ -424,3 +424,80 @@ def test_assistant_trim_beyond_top_ranks(monkeypatch, client):
     data = search(client, "u15", "kayak").json()["data"]
     assert len(data[0]["content"]) > 1500 and all(len(d["content"]) < 500 for d in data[1:])
     object.__setattr__(app.main.settings, "assistant_trim_after", 20)
+
+
+def test_request_ordinal_only_for_structured_ids():
+    from app.retrieval import request_ordinal
+    assert request_ordinal("run:sample:0:chunk-2") == 2 and request_ordinal("run/3/7") == 7
+    assert request_ordinal("abc-12") == 12 and request_ordinal("plain") == 0
+    # the platform's opaque ids: trailing digits of a hex digest are not an order
+    assert request_ordinal("r_1b6b641bd57a376786ec90c26108fbc2cd64a74541b618f15e3086ba0c5b5767") == 0
+    assert request_ordinal("r_24289f015b8848bb90e724d1259989f39e8d4a0b47c6cfc7940a34e4a9c3939b") == 0
+
+
+def test_opaque_request_ids_keep_arrival_order(client):
+    # same timestamps, hash-like ids whose trailing digits would invert the order: arrival decides
+    first, second = "r_" + "a" * 60 + "9999", "r_" + "b" * 60 + "0001"
+    add(client, first, "u16", "s", [{"role": "user", "content": "Where did the cat hide the toy mouse?", "timestamp": 1747774800000}])
+    add(client, second, "u16", "s", [{"role": "assistant", "content": "It is under the sofa.", "timestamp": 1747774800000}])
+    data = search(client, "u16", "toy mouse").json()["data"]
+    assert len(data) == 1 and data[0]["content"].index("toy mouse") < data[0]["content"].index("sofa")
+
+
+def test_description_context_echo_is_not_reused():
+    from app.store import strip_context
+    d = "Scene: a photo\nObjects: a red mug\nText: none\nContext: user: my mug from Lyon"
+    assert strip_context(d) == "Scene: a photo\nObjects: a red mug\nText: none"
+    md = "**Scene:** photo\n**Text:** none\n**Context:** 王景川: 这是我的杯子\n第二行"
+    assert strip_context(md) == "**Scene:** photo\n**Text:** none"
+    assert strip_context("Scene: x   Objects: y") == "Scene: x   Objects: y" and strip_context("") == "" and strip_context(None) is None
+
+
+def test_description_cached_across_users_carries_no_other_context(model_client, monkeypatch):
+    import app.models
+    c, _ = model_client
+
+    async def describe(self, uri, ctx):
+        return f"Objects: a green ceramic teapot\nContext: {ctx}"
+
+    monkeypatch.setattr(app.models.Models, "describe_image", describe)
+    img = png(0, 120, 60)
+    add(c, "x1", "ua", "s1", [{"role": "user", "content": [{"type": "text", "text": "secret plan of user A"},
+                                                         {"type": "image_url", "image_url": {"url": img}}]}])
+    add(c, "x2", "ub", "s1", [{"role": "user", "content": [{"type": "text", "text": "my teapot"},
+                                                         {"type": "image_url", "image_url": {"url": img}}]}])
+    data = search(c, "ub", "teapot").json()["data"]
+    assert data and "secret plan" not in json.dumps(data, ensure_ascii=False)
+    assert "green ceramic teapot" in json.dumps(data)
+
+
+def test_provider_account_errors_are_outages_not_refusals(monkeypatch):
+    import asyncio
+    import httpx
+    from app.config import Settings
+    from app.models import ModelRejected, ModelUnavailable, Models
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    def run(status):
+        m = Models(Settings())
+        m.client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(status, json={})))
+        try:
+            asyncio.run(m._post("https://llm.example/v1/chat/completions", "k", {}, attempts=2))
+        except Exception as e:
+            return type(e)
+
+    assert run(400) is ModelRejected and run(422) is ModelRejected        # the input itself
+    assert run(401) is ModelUnavailable and run(403) is ModelUnavailable  # key, quota or gateway: retry, defer, repair
+    assert run(429) is ModelUnavailable and run(503) is ModelUnavailable
+
+
+def test_question_image_counts_against_answer_budget(client):
+    import app.main
+    store = app.main.state["store"]
+    h = store.put_image(base64.b64decode(png(1, 2, 3, size=600).split(",", 1)[1]), "image/png")
+    assert app.main.query_image_tokens(store, [h]) == 2833 + 5667 * 4
+    assert app.main.query_image_tokens(store, []) == 0

@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -50,6 +51,17 @@ def dhash(data: bytes) -> Optional[int]:
         return bits
     except Exception:
         return None
+
+
+_CONTEXT_FIELD = re.compile(r"(?:^|\n)[ \t#>*-]*\**[ \t]*Context[ \t]*\**[ \t]*[:：].*\Z", re.S | re.I)
+
+
+def strip_context(description: Optional[str]) -> Optional[str]:
+    """A schema description without its trailing "Context:" field (the prompt's last field, an echo of the text the
+    image was attached to)."""
+    if not description:
+        return description
+    return _CONTEXT_FIELD.sub("", description).rstrip()
 
 
 MAX_PIXELS = 64_000_000  # larger images are stored as sent, never decoded in full
@@ -181,9 +193,11 @@ class Store:
         return out
 
     def image_description(self, h: str) -> Optional[str]:
-        """The stored description (possibly from an older prompt version); None if the image was never described."""
+        """The stored description (possibly from an older prompt version); None if the image was never described.
+        The model's echo of the conversation context is cut off: descriptions are cached per image across users and
+        Searches, so it would carry the first writer's (or a question's) text into other memories."""
         row = self.db.execute("SELECT description FROM images WHERE hash=?", (h,)).fetchone()
-        return row[0] if row else None
+        return strip_context(row[0]) if row else None
 
     def description_current(self, h: str) -> bool:
         """Whether the image has a description from the current prompt version (or was refused: empty)."""

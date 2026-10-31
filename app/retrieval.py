@@ -419,8 +419,8 @@ def arrival_order(records: list) -> dict:
         by_req.setdefault(r.request_id, []).append(i)
     first = {req: min(records[i].id for i in ids) for req, ids in by_req.items()}
     req_time, last = {}, 0
-    # Adds may arrive concurrently, so arrival is a weak order: the ordinal the platform puts at the end of
-    # request_id (e.g. "...:chunk-12") comes first, arrival breaks ties
+    # Adds may arrive concurrently, so arrival is a weak order: a chunk number at the end of a structured request_id
+    # (e.g. "...:chunk-12") comes first, arrival breaks ties
     for req in sorted(by_req, key=lambda q: (request_ordinal(q), first[q])):
         ts = [records[i].ts for i in by_req[req] if records[i].ts is not None]
         last = min(ts) if ts else last
@@ -428,12 +428,14 @@ def arrival_order(records: list) -> dict:
     return {i: (*req_time[r.request_id], r.msg_index) for i, r in enumerate(records)}
 
 
-_ORDINAL = re.compile(r"(\d+)\D*$")
+_ORDINAL = re.compile(r"(?:^|[:/#._-])(?:chunk|part|turn|seg|batch)?[-_]?(\d{1,6})$", re.I)
 
 
 def request_ordinal(request_id: str) -> int:
+    """Chunk number ending a structured request_id ("...:chunk-12", "run/3/7"); 0 when there is none. Opaque ids
+    (the platform sends "r_" + 64 hex digits) carry no order: their trailing digits are random, so arrival decides."""
     m = _ORDINAL.search(request_id)
-    return int(m.group(1)) if m and len(m.group(1)) < 12 else 0
+    return int(m.group(1)) if m else 0
 
 
 def build_units(records: list) -> tuple:

@@ -21,8 +21,10 @@ class Settings:
     llm_base_url: str = _env("LLM_BASE_URL", "https://api.openai.com/v1")
     llm_api_key: str = _env("LLM_API_KEY")
     llm_model: str = _env("LLM_MODEL", "gpt-4o-mini")
-    llm_concurrency: int = int(_env("LLM_CONCURRENCY", "8"))  # concurrent provider calls, per kind
-    emb_concurrency: int = int(_env("EMB_CONCURRENCY", "8"))
+    # concurrent provider calls, per kind; through the gateway 16 parallel high-detail descriptions ran ~134/min
+    # (8: ~59/min; 32: throttled)
+    llm_concurrency: int = int(_env("LLM_CONCURRENCY", "16"))
+    emb_concurrency: int = int(_env("EMB_CONCURRENCY", "16"))
     rerank_concurrency: int = int(_env("RERANK_CONCURRENCY", "8"))
 
     caption_detail: str = _env("CAPTION_DETAIL", "high")  # image detail for descriptions: small text needs "high"
@@ -91,11 +93,14 @@ class Settings:
     # tokenizer differences; images are priced as gpt-4o-mini prices them (the assumed Answer model).
     answer_window: int = int(_env("ANSWER_INPUT_TOKENS", "117760"))
     image_detail_low: bool = _env("ANSWER_IMAGE_DETAIL", "auto") == "low"  # how the Answer model is assumed to view images
-    index_cache_records: int = int(_env("INDEX_CACHE_RECORDS", "300000"))  # in-memory search indexes, all users
+    # in-memory search indexes, all users: ~22 KB per record, so 50,000 ~ 1.1 GB, well inside the unit's MemoryMax=4G
+    # (300,000 would need ~6.4 GB); an evicted user's index rebuilds in well under a second
+    index_cache_records: int = int(_env("INDEX_CACHE_RECORDS", "50000"))
 
     # Provider outages during Add: answer 503 (Retry-After seconds) up to ADD_MAX_DEFERS times per request, then
     # commit without descriptions/vectors and fill them in from the background repair loop.
-    add_max_defers: int = int(_env("ADD_MAX_DEFERS", "4"))
+    # 20 x Retry-After 30 s ~ 10 min of outage before a degraded commit (the platform retries an Add up to 32 times)
+    add_max_defers: int = int(_env("ADD_MAX_DEFERS", "20"))
     # Memory bounds: Adds (up to 30 MiB bodies) and Search response assembly beyond these counts wait their turn
     # instead of being decoded side by side (64 concurrent 30 MiB Adds would need several GB).
     add_max_inflight: int = int(_env("ADD_MAX_INFLIGHT", "16"))

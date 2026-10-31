@@ -491,6 +491,19 @@ async def user_index(store: Store, user_id: str):
         return idx
 
 
+def query_image_tokens(store: Store, hashes: list) -> int:
+    """Answer-window cost of the question's images, priced like returned images (compact copy, gpt-4o-mini)."""
+    total = 0
+    for h in hashes:
+        got = store.image_data_uri(h)
+        if got:
+            try:
+                total += retrieval.image_tokens(*retrieval.data_uri_size(got[0]), settings.image_detail_low)
+            except Exception:
+                total += retrieval.image_tokens(1024, 1024, settings.image_detail_low)
+    return total
+
+
 @app.post("/v1/memories/search")
 async def search(req: Request):
     if not authorized(req):
@@ -549,7 +562,8 @@ async def search(req: Request):
         seen = set(order)  # the whole memory fits: keep the ranking, then append what no signal matched
         order += sorted((k for k in range(len(units)) if k not in seen), key=lambda k: -(units[k].ts or 0))
 
-    budget = retrieval.answer_budget(settings, q_text, opts)
+    # the question's own pictures share the Answer window with our results
+    budget = retrieval.answer_budget(settings, q_text, opts) - await asyncio.to_thread(query_image_tokens, store, q_hashes)
 
     def assemble():
         items = retrieval.render(units, order, store, settings, budget)[:body.top_k]

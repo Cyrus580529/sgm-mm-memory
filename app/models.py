@@ -42,7 +42,12 @@ DOC_INSTRUCT = "Given a question about a person's past conversations, photos and
 
 
 class ModelRejected(Exception):
-    """The provider refused this input for good (4xx other than rate limits); retrying will not help."""
+    """The provider refused this input for good (400, 413, 415, 422); retrying will not help."""
+
+
+# Only these say something about the input itself. 401/402/403/404 are account, quota or routing problems of the
+# provider (common with gateways): treating them as a refusal would store images without descriptions for good.
+INPUT_REJECTED = (400, 413, 415, 422)
 
 
 class ModelUnavailable(Exception):
@@ -67,7 +72,7 @@ class Models:
                                            timeout=httpx.Timeout(timeout, connect=10.0))
                 if r.status_code == 200:
                     return r.json()
-                if r.status_code not in (408, 409, 425, 429) and r.status_code < 500:
+                if r.status_code in INPUT_REJECTED:
                     log.error("model call %s -> %s", url, r.status_code)  # no body: it may echo input content
                     raise ModelRejected(f"{url} -> {r.status_code}")
                 log.warning("model call %s -> %s, retrying", url, r.status_code)

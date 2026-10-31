@@ -4,8 +4,22 @@ Schema-guided multimodal memory for the Agent Memory Leaderboard (AML) Cycle 2, 
 Open-source Methods division. The service stores conversations with images and returns the original evidence for
 a question; it never generates answers (the platform's Answer stage does).
 
-**Status:** in development. The submission version and its fixed commit will be stated here before the official
-evaluation.
+**Status:** submission version v1.1 (tag `v1.1`). v1.0 was the first registered version.
+
+**Changes in v1.1** (bug fixes found in smoke runs; the method and its settings are unchanged):
+- Order within a session: Adds were ordered by digits at the end of `request_id`, assuming ids like
+  `...:chunk-12`. The platform's ids are opaque (`r_` + 64 hex digits), so those digits are random and a session's
+  chunks were shuffled whenever its messages share a timestamp. Only a structured chunk number counts now; otherwise
+  arrival order decides.
+- Image descriptions no longer carry the model's echo of the conversation context. Descriptions are cached per image,
+  so the echo carried one user's (or one question's) text into other users' memories; it also duplicated text.
+- Provider answers 401/402/403/404 (key, quota or gateway problems) count as an outage (retry, defer, repair), not as
+  a refusal of the input, which had stored images without descriptions for good.
+- The question's own images are counted against the Answer window when results are packed.
+- Operational defaults for a Full run: `INDEX_CACHE_RECORDS` 300000 → 50000 (the index costs ~22 KB per record, so the
+  old default needed ~6.4 GB against the unit's `MemoryMax=4G`), `ADD_MAX_DEFERS` 4 → 20 (~10 min of provider
+  outage before a degraded commit), `LLM_CONCURRENCY` and `EMB_CONCURRENCY` 8 → 16 (description throughput through
+  the gateway ~59 → ~134 images per minute).
 
 ## Method
 
